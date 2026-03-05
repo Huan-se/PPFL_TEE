@@ -6,7 +6,6 @@ import time
 import torch
 import numpy as np
 
-# 确保能找到根目录下的模块
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from Entity.Client import Client
@@ -15,32 +14,23 @@ from _utils_.dataloader import load_and_split_dataset
 from _utils_.poison_loader import PoisonLoader
 from _utils_.save_config import save_result_with_config
 
-# 导入模型库
 from model.Lenet5 import LeNet5
 from model.Resnet20 import resnet20
 from model.Resnet18 import ResNet18_CIFAR10
 
-# ==========================================
-# 1. 实验参数与配置路由 (严格对齐 config.yaml)
-# ==========================================
 def parse_args():
     parser = argparse.ArgumentParser(description="PPFL-TEE Plaintext Simulation Framework")
     
-    # 基础配置文件
     parser.add_argument('--config', type=str, default='../config/config.yaml', help='Path to base config file')
     
-    # 模型与数据集映射
     parser.add_argument('--dataset', type=str, choices=['mnist', 'cifar10'], help='Dataset to use (auto-bound to model if omitted)')
     parser.add_argument('--model', type=str, choices=['lenet5', 'resnet20', 'resnet18'], required=True, help='Model architecture')
     
-    # 攻击相关 (名称严格对应 config.yaml 中 attack.params 的 key)
     parser.add_argument('--attack', type=str, choices=['none', 'random_poison', 'gradient_amplify', 'backdoor', 'label_flip'], default='none')
     parser.add_argument('--poison_ratio', type=float, default=0.0, help='Ratio of poisoned clients (0.0 to 1.0)')
     
-    # 防御相关 (名称严格对应 config.yaml 中 defense.method 的值)
     parser.add_argument('--defense', type=str, choices=['none', 'layers_proj_detect', 'krum', 'median', 'clustering'], default='none')
     
-    # 其他超参覆盖
     parser.add_argument('--rounds', type=int, default=None, help='Number of FL rounds')
     parser.add_argument('--local_epochs', type=int, default=None, help='Local training epochs')
     parser.add_argument('--device', type=str, default='cuda', help='Device (cuda/cpu)')
@@ -48,14 +38,12 @@ def parse_args():
     return parser.parse_args()
 
 def load_config(args):
-    """加载 YAML 并用命令行参数精确覆盖"""
     with open(args.config, 'r', encoding='utf-8') as f:
         config = yaml.safe_load(f)
         
     for sec in ['experiment', 'federated', 'data', 'defense', 'attack']:
         if sec not in config: config[sec] = {}
         
-    # 1. 数据集与模型强绑定逻辑
     if args.model == 'lenet5':
         args.dataset = 'mnist'
     elif args.model in ['resnet20', 'resnet18']:
@@ -64,7 +52,6 @@ def load_config(args):
     config['data']['dataset'] = args.dataset
     config['data']['model'] = args.model
     
-    # 2. 覆盖攻击域
     if args.attack != 'none':
         config['attack']['active_attacks'] = [args.attack]
         config['attack']['poison_ratio'] = args.poison_ratio
@@ -72,17 +59,14 @@ def load_config(args):
         config['attack']['active_attacks'] = []
         config['attack']['poison_ratio'] = 0.0
 
-    # 3. 覆盖防御域
     config['defense']['method'] = args.defense
     
-    # 4. 覆盖联邦域与实验域
     if args.rounds is not None:
         config['federated']['comm_rounds'] = args.rounds
     if args.local_epochs is not None:
         config['federated']['local_epochs'] = args.local_epochs
     config['experiment']['device'] = args.device
     
-    # 冗余字段兼容性处理
     config['poison_ratio'] = config['attack']['poison_ratio']
     config['if_noniid'] = config['data'].get('if_noniid', False)
     
@@ -94,16 +78,12 @@ MODEL_REGISTRY = {
     'resnet18': ResNet18_CIFAR10
 }
 
-# ==========================================
-# 2. 主流程
-# ==========================================
 def main():
     args = parse_args()
     config = load_config(args)
     
-    # 动态生成日志和结果保存路径
     exp_name = f"{args.dataset}_{args.model}_{args.attack}_p{args.poison_ratio}_{args.defense}"
-    results_dir = os.path.join("main", "results", exp_name)
+    results_dir = os.path.join("results", exp_name)
     os.makedirs(results_dir, exist_ok=True)
     log_file = os.path.join(results_dir, "detection_log.csv")
     
@@ -187,6 +167,9 @@ def main():
     
     history = {'acc': [], 'loss': [], 'asr': []}
     
+    # [修改]：判断当前是否是我们的特征投影方法
+    is_ours_method = (config['defense']['method'] == 'layers_proj_detect')
+    
     for round_num in range(1, global_rounds + 1):
         print(f"\n--- Global Round {round_num}/{global_rounds} ---")
         t_round_start = time.time()
@@ -201,9 +184,14 @@ def main():
         
         for client in clients:
             client.phase1_local_train()
-            proj_seed = int(seed + round_num) 
-            feat, d_size = client.phase2_tee_process(proj_seed)
             
+            # [修改]：只有 OURS 才会触发耗时的 TEE 投影计算，其他模型走轻量级明文提取通道
+            if is_ours_method:
+                proj_seed = int(seed + round_num) 
+                feat, d_size = client.phase2_tee_process(proj_seed)
+            else:
+                feat, d_size = client.phase2_plaintext_process()
+                
             client_features.append(feat)
             client_data_sizes.append(d_size)
             active_ids.append(client.client_id)

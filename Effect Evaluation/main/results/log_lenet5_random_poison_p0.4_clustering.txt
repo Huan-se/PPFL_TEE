@@ -1,0 +1,56 @@
+
+==================================================
+🚀 Starting Experiment: mnist_lenet5_random_poison_p0.4_clustering
+==================================================
+
+[1] Loading Data...
+  [Data] Splitting mnist IID...
+
+[!] Attack Enabled: ['random_poison'] | Attackers: 8/20
+
+[2] Initializing Server...
+[TEEAdapter] Warning: Could not load TEE library (Lib not found: /home/xd/sjh/exp/Effect Evaluation/lib/libtee_bridge.so). Running in Simulation Mode only.
+
+[3] Initializing Clients...
+
+[4] Starting Federated Learning Loop...
+
+--- Global Round 1/5 ---
+    [Client 0] Epoch 1/3 | Batch 0/47 | Loss: 2.3018
+    [Client 0] Epoch 2/3 | Batch 0/47 | Loss: 2.2730
+    [Client 0] Epoch 3/3 | Batch 0/47 | Loss: 1.7767
+  [Evaluate] Main Task Acc: 15.07% | Loss: 3.2080
+  [Time] Round 1 completed in 22.10s
+
+--- Global Round 2/5 ---
+    [Client 0] Epoch 1/3 | Batch 0/47 | Loss: 3.0591
+    [Client 0] Epoch 2/3 | Batch 0/47 | Loss: 0.3013
+    [Client 0] Epoch 3/3 | Batch 0/47 | Loss: 0.3711
+  [Evaluate] Main Task Acc: 25.90% | Loss: 6.8230
+  [Time] Round 2 completed in 21.57s
+
+--- Global Round 3/5 ---
+    [Client 0] Epoch 1/3 | Batch 0/47 | Loss: 6.5369
+    [Client 0] Epoch 2/3 | Batch 0/47 | Loss: 0.4383
+    [Client 0] Epoch 3/3 | Batch 0/47 | Loss: 0.1163
+  [Evaluate] Main Task Acc: 43.98% | Loss: 3.2435
+  [Time] Round 3 completed in 21.42s
+
+--- Global Round 4/5 ---
+    [Client 0] Epoch 1/3 | Batch 0/47 | Loss: 3.7901
+    [Client 0] Epoch 2/3 | Batch 0/47 | Loss: 0.1649
+    [Client 0] Epoch 3/3 | Batch 0/47 | Loss: 0.0763
+  [Evaluate] Main Task Acc: 38.11% | Loss: 3.0913
+  [Time] Round 4 completed in 20.19s
+
+--- Global Round 5/5 ---
+    [Client 0] Epoch 1/3 | Batch 0/47 | Loss: 3.1295
+    [Client 0] Epoch 2/3 | Batch 0/47 | Loss: 0.1632
+    [Client 0] Epoch 3/3 | Batch 0/47 | Loss: 0.0459
+  [Evaluate] Main Task Acc: 58.41% | Loss: 2.2017
+  [Time] Round 5 completed in 21.01s
+
+[5] Saving results and generating plots...
+[Save] Result saved to poison_with_detection_lenet5_mnist_clustering_random_poison_p0.40_IID (.json/.npz/.png)
+
+✅ Experiment finished! All data and plots saved to: results/mnist_lenet5_random_poison_p0.4_clustering

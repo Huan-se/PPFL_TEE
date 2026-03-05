@@ -1,0 +1,41 @@
+
+==================================================
+🚀 Starting Experiment: mnist_lenet5_random_poison_p0.4_none
+==================================================
+
+[1] Loading Data...
+  [Data] Splitting mnist IID...
+
+[!] Attack Enabled: ['random_poison'] | Attackers: 8/20
+
+[2] Initializing Server...
+[TEEAdapter] Warning: Could not load TEE library (Lib not found: /home/xd/sjh/exp/Effect Evaluation/lib/libtee_bridge.so). Running in Simulation Mode only.
+
+[3] Initializing Clients...
+
+[4] Starting Federated Learning Loop...
+
+--- Global Round 1/5 ---
+  [Evaluate] Main Task Acc: 12.52% | Loss: 4.3880
+  [Time] Round 1 completed in 21.57s
+
+--- Global Round 2/5 ---
+  [Evaluate] Main Task Acc: 35.86% | Loss: 2.8457
+  [Time] Round 2 completed in 21.50s
+
+--- Global Round 3/5 ---
+  [Evaluate] Main Task Acc: 27.66% | Loss: 4.3779
+  [Time] Round 3 completed in 21.56s
+
+--- Global Round 4/5 ---
+  [Evaluate] Main Task Acc: 44.44% | Loss: 3.1228
+  [Time] Round 4 completed in 21.57s
+
+--- Global Round 5/5 ---
+  [Evaluate] Main Task Acc: 61.36% | Loss: 2.7334
+  [Time] Round 5 completed in 21.03s
+
+[5] Saving results and generating plots...
+[Save] Result saved to poison_no_detection_lenet5_mnist_none_random_poison_p0.40_IID (.json/.npz/.png)
+
+✅ Experiment finished! All data and plots saved to: results/mnist_lenet5_random_poison_p0.4_none

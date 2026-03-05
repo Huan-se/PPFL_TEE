@@ -27,7 +27,13 @@ class TEEAdapter:
         self.initialized = False
         self.lock = threading.Lock()
         
-        # 尝试加载库，如果失败仅打印警告，不阻碍明文实验
+        # ====================================================
+        # [核心优化]：混合存储与流式生成策略
+        # ====================================================
+        self.FIXED_PROJ_SEED = 8888        # 全局固定种子
+        self.global_matrix_cache = {}      # 内存常驻缓存 (每次训练读取一次)
+        self.MAX_CACHE_MB = 4000           # 缓存阈值(4GB)，拦截45GB的ResNet18
+        
         try:
             self._load_library()
             self._init_functions()
@@ -55,7 +61,6 @@ class TEEAdapter:
         return str(val).encode('utf-8')
 
     def _init_functions(self):
-        # 仅当库加载成功时初始化
         if not self.lib: return
 
         self.lib.tee_init.argtypes = [ctypes.c_char_p]
@@ -93,9 +98,8 @@ class TEEAdapter:
 
     def initialize_enclave(self, enclave_path=None):
         if self.initialized: return
-        # 如果库未加载，跳过 Enclave 初始化
         if not self.lib: 
-            self.initialized = True # 标记为 True 以避免重复尝试
+            self.initialized = True 
             return
 
         with self.lock:
@@ -119,52 +123,93 @@ class TEEAdapter:
     
     def simulate_projection(self, client_id, proj_seed, w_new, w_old, output_dim=1024):
         """
-        [GPU Accelerated Simulation] 使用 PyTorch GPU 加速计算投影。
-        极大地优化了超大模型（如ResNet18）生成随机矩阵的时间。
+        [Ultra-Fast Hybrid Simulation]
+        小模型 (LeNet5/ResNet20): 从外存读取一次至内存常驻，极速矩阵乘法。
+        超大模型 (ResNet18): GPU 流式重生成，避免 45GB 爆存。
         """
-        # start = time.time()
-        # 1. 计算梯度
         if w_new.dtype != np.float32: w_new = w_new.astype(np.float32)
         if w_old.dtype != np.float32: w_old = w_old.astype(np.float32)
         grad = w_new - w_old
         total_len = grad.size
         
-        # 2. 尝试获取 GPU
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        
-        # [核心优化] 使用独立的 PyTorch Generator 保证投影的随机种子确定性，
-        # 同时不会污染全局的随机种子（以免影响 Dropout 或数据增强）
-        generator = torch.Generator(device=device)
-        generator.manual_seed(proj_seed)
-        
-        # 将梯度移至 GPU
         grad_tensor = torch.from_numpy(grad).to(device)
         projection = torch.zeros(output_dim, device=device)
         
-        # 3. 分块矩阵乘法 (防止爆显存，每次计算占用约 800MB 显存)
         chunk_size = 200000 
-        
-        with torch.no_grad():
-            for start_idx in range(0, total_len, chunk_size):
-                end_idx = min(start_idx + chunk_size, total_len)
-                current_chunk_len = end_idx - start_idx
-                
-                # 直接在 GPU 上生成高斯随机矩阵块并做乘法
-                mat_chunk = torch.randn((output_dim, current_chunk_len), generator=generator, device=device)
-                grad_chunk = grad_tensor[start_idx:end_idx]
-                
-                projection += torch.matmul(mat_chunk, grad_chunk)
+        total_mb = (total_len * output_dim * 4) / (1024 * 1024)
+
+        if total_mb <= self.MAX_CACHE_MB:
+            # === 策略 A：外存预生成 + 内存常驻 (LeNet5/ResNet20) ===
+            matrix_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "proj_matrices")
+            os.makedirs(matrix_dir, exist_ok=True)
+            matrix_path = os.path.join(matrix_dir, f"proj_{total_len}_{output_dim}_seed{self.FIXED_PROJ_SEED}.pt")
+
+            with self.lock:
+                # 1. 如果内存里没有，去硬盘找
+                if 'full' not in self.global_matrix_cache:
+                    if os.path.exists(matrix_path):
+                        try:
+                            self.global_matrix_cache['full'] = torch.load(matrix_path, map_location='cpu')
+                        except Exception:
+                            pass # 如果并发读取损坏，静默处理，走下面重新生成
+                    
+                    # 2. 如果硬盘也没有(第一次运行)，就在 GPU 生成并保存到硬盘
+                    if 'full' not in self.global_matrix_cache:
+                        generator = torch.Generator(device=device)
+                        generator.manual_seed(self.FIXED_PROJ_SEED)
+                        
+                        chunks = []
+                        for start_idx in range(0, total_len, chunk_size):
+                            end_idx = min(start_idx + chunk_size, total_len)
+                            current_chunk_len = end_idx - start_idx
+                            # 生成完马上推到 CPU 防止显存溢出
+                            mat_chunk = torch.randn((output_dim, current_chunk_len), generator=generator, device=device).cpu()
+                            chunks.append(mat_chunk)
+                        
+                        full_mat = torch.cat(chunks, dim=1)
+                        self.global_matrix_cache['full'] = full_mat
+                        
+                        # 原子化写入，防止多个进程并发把文件写坏
+                        tmp_path = matrix_path + f".tmp.{os.getpid()}"
+                        torch.save(full_mat, tmp_path)
+                        try:
+                            os.rename(tmp_path, matrix_path)
+                        except OSError:
+                            if os.path.exists(tmp_path): os.remove(tmp_path)
             
-        # 模拟 ranges 返回值 (全范围)
+            # 3. 内存直接切片推 GPU 算矩阵乘法
+            full_mat_cpu = self.global_matrix_cache['full']
+            with torch.no_grad():
+                for start_idx in range(0, total_len, chunk_size):
+                    end_idx = min(start_idx + chunk_size, total_len)
+                    mat_chunk = full_mat_cpu[:, start_idx:end_idx].to(device)
+                    grad_chunk = grad_tensor[start_idx:end_idx]
+                    projection += torch.matmul(mat_chunk, grad_chunk)
+                    
+                    del mat_chunk
+                    del grad_chunk
+        else:
+            # === 策略 B：纯流式实时生成 (ResNet18) ===
+            generator = torch.Generator(device=device)
+            generator.manual_seed(self.FIXED_PROJ_SEED)
+            
+            with torch.no_grad():
+                for start_idx in range(0, total_len, chunk_size):
+                    end_idx = min(start_idx + chunk_size, total_len)
+                    current_chunk_len = end_idx - start_idx
+                    mat_chunk = torch.randn((output_dim, current_chunk_len), generator=generator, device=device)
+                    grad_chunk = grad_tensor[start_idx:end_idx]
+                    projection += torch.matmul(mat_chunk, grad_chunk)
+                    
+                    del mat_chunk
+                    del grad_chunk
+            
         ranges = np.array([0, total_len], dtype=np.int32)
-        
-        # end = time.time()
-        # print(f"Projection Time: {end - start:.2f}s")
-        # 将结果拉回 CPU 并转为 numpy 继续后续流程
         return projection.cpu().numpy(), ranges
 
     # --- Original Wrappers (Keep for compatibility) ---
-
+    # 下方原有的 prepare_gradient 等方法无需改动
     def prepare_gradient(self, client_id, proj_seed, w_new, w_old, output_dim=1024):
         if not self.lib: 
             return self.simulate_projection(client_id, proj_seed, w_new, w_old, output_dim)

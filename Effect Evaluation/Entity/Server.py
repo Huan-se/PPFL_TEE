@@ -10,7 +10,7 @@ from collections import defaultdict
 from Defence.score import ScoreCalculator
 from Defence.kickout import KickoutManager
 from Defence.layers_proj_detect import Layers_Proj_Detector
-from Defence.baseline_method import BaselineDetector # [新增] 导入基线方法
+from Defence.baseline_method import BaselineDetector 
 from _utils_.tee_adapter import get_tee_adapter_singleton
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -33,11 +33,9 @@ class Server(object):
         self.suspect_counters = {} 
         self.global_update_direction = None 
         
-        # --- 初始化防御模块 ---
         det_params = self.defense_config.get('params', {})
         self.mesas_detector = Layers_Proj_Detector(config=det_params)
         
-        # [新增] 初始化基线方法探测器
         if self.detection_method in ['krum', 'clustering']:
             self.baseline_detector = BaselineDetector(
                 method=self.detection_method, 
@@ -82,13 +80,15 @@ class Server(object):
         self.w_old_global_flat = self._flatten_params(self.global_model)
         return copy.deepcopy(self.global_model.state_dict()), None
 
-    # [修改] 增加 client_objects 参数，用于直接提取明文梯度
     def calculate_weights(self, client_id_list, client_features_dict_list, client_data_sizes, current_round=0, client_objects=None):
-        self._update_global_direction_feature(current_round)
+        # [修改]：移除了无条件的全局投影计算
         weights = {}
         
         # 1. 我们的方法 (OURS: 特征投影 + 聚类检测)
         if any(k in self.detection_method for k in ["mesas", "projected", "layers_proj", "ours"]):
+            # [修改]：仅在 OURS 方案下才更新全局梯度的投影特征
+            self._update_global_direction_feature(current_round)
+            
             if self.verbose: 
                 print(f"  [Server] Executing {self.detection_method} detection (Round {current_round})...")
             
@@ -103,19 +103,18 @@ class Server(object):
             total_score = sum(raw_weights.values())
             weights = {cid: s / total_score for cid, s in raw_weights.items()} if total_score > 0 else {cid: 0.0 for cid in raw_weights}
             
-        # 2. [新增] 基线方法 (Krum / Clustering)
+        # 2. 基线方法 (Krum / Clustering)
         elif self.detection_method in ['krum', 'clustering'] and self.baseline_detector:
             if self.verbose:
                 print(f"  [Server] Executing Baseline {self.detection_method.upper()} detection (Round {current_round})...")
             
-            # 提取明文原始梯度供基线算法使用
             client_grads = {c.client_id: c.get_plaintext_gradient() for c in client_objects if c.client_id in client_id_list}
             weights, logs, global_stats = self.baseline_detector.detect(client_grads, verbose=self.verbose)
             
             if self.log_file_path:
                 self._write_detection_log(current_round, logs, weights, global_stats)
         
-        # 3. 未开启检测 (No Defense / Median 因为属于聚合规则所以这里的权重全是1/N)
+        # 3. 未开启检测 (No Defense / Median)
         else:
             weights = {cid: 1.0/len(client_id_list) for cid in client_id_list}
             
@@ -154,7 +153,6 @@ class Server(object):
         t_start_total = time.time()
         sorted_active_ids = sorted(active_ids) 
         
-        # [特判] Coordinate-wise Median 聚合逻辑
         if self.detection_method == 'median':
             if self.verbose:
                 print(f"\n[Server] >>> STARTING MEDIAN AGGREGATION (ROUND {round_num}) <<<")
@@ -165,8 +163,7 @@ class Server(object):
                     grads_list.append(torch.from_numpy(client.get_plaintext_gradient()).to(self.device))
             
             if len(grads_list) > 0:
-                stacked_grads = torch.stack(grads_list) # (N, D)
-                # 计算特征维度中位数
+                stacked_grads = torch.stack(grads_list) 
                 median_grad, _ = torch.median(stacked_grads, dim=0) 
                 self._apply_global_update(median_grad.cpu().numpy())
                 
@@ -174,7 +171,6 @@ class Server(object):
                     print(f"  [Success] Median Aggregation Completed.")
             return
 
-        # 其他所有方法 (OURS, Krum, Clustering, None) 的标准加权聚合逻辑
         if self.verbose:
             print(f"\n[Server] >>> STARTING WEIGHTED AGGREGATION (ROUND {round_num}) <<<")
             

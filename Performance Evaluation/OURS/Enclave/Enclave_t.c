@@ -31,6 +31,16 @@ typedef struct ms_ecall_set_verbose_t {
 	int ms_level;
 } ms_ecall_set_verbose_t;
 
+typedef struct ms_ecall_ra_keygen_t {
+	uint8_t* ms_out_pub_key;
+	uint8_t* ms_out_quote;
+} ms_ecall_ra_keygen_t;
+
+typedef struct ms_ecall_ra_provision_seed_t {
+	uint8_t* ms_server_pub_key;
+	uint8_t* ms_cipher_payload;
+} ms_ecall_ra_provision_seed_t;
+
 typedef struct ms_ecall_prepare_gradient_t {
 	int ms_client_id;
 	const char* ms_proj_seed_str;
@@ -130,6 +140,146 @@ static sgx_status_t SGX_CDECL sgx_ecall_set_verbose(void* pms)
 	ecall_set_verbose(ms->ms_level);
 
 
+	return status;
+}
+
+static sgx_status_t SGX_CDECL sgx_ecall_ra_keygen(void* pms)
+{
+	CHECK_REF_POINTER(pms, sizeof(ms_ecall_ra_keygen_t));
+	//
+	// fence after pointer checks
+	//
+	sgx_lfence();
+	ms_ecall_ra_keygen_t* ms = SGX_CAST(ms_ecall_ra_keygen_t*, pms);
+	sgx_status_t status = SGX_SUCCESS;
+	uint8_t* _tmp_out_pub_key = ms->ms_out_pub_key;
+	size_t _len_out_pub_key = 64;
+	uint8_t* _in_out_pub_key = NULL;
+	uint8_t* _tmp_out_quote = ms->ms_out_quote;
+	size_t _len_out_quote = 4384;
+	uint8_t* _in_out_quote = NULL;
+
+	CHECK_UNIQUE_POINTER(_tmp_out_pub_key, _len_out_pub_key);
+	CHECK_UNIQUE_POINTER(_tmp_out_quote, _len_out_quote);
+
+	//
+	// fence after pointer checks
+	//
+	sgx_lfence();
+
+	if (_tmp_out_pub_key != NULL && _len_out_pub_key != 0) {
+		if ( _len_out_pub_key % sizeof(*_tmp_out_pub_key) != 0)
+		{
+			status = SGX_ERROR_INVALID_PARAMETER;
+			goto err;
+		}
+		if ((_in_out_pub_key = (uint8_t*)malloc(_len_out_pub_key)) == NULL) {
+			status = SGX_ERROR_OUT_OF_MEMORY;
+			goto err;
+		}
+
+		memset((void*)_in_out_pub_key, 0, _len_out_pub_key);
+	}
+	if (_tmp_out_quote != NULL && _len_out_quote != 0) {
+		if ( _len_out_quote % sizeof(*_tmp_out_quote) != 0)
+		{
+			status = SGX_ERROR_INVALID_PARAMETER;
+			goto err;
+		}
+		if ((_in_out_quote = (uint8_t*)malloc(_len_out_quote)) == NULL) {
+			status = SGX_ERROR_OUT_OF_MEMORY;
+			goto err;
+		}
+
+		memset((void*)_in_out_quote, 0, _len_out_quote);
+	}
+
+	ecall_ra_keygen(_in_out_pub_key, _in_out_quote);
+	if (_in_out_pub_key) {
+		if (memcpy_s(_tmp_out_pub_key, _len_out_pub_key, _in_out_pub_key, _len_out_pub_key)) {
+			status = SGX_ERROR_UNEXPECTED;
+			goto err;
+		}
+	}
+	if (_in_out_quote) {
+		if (memcpy_s(_tmp_out_quote, _len_out_quote, _in_out_quote, _len_out_quote)) {
+			status = SGX_ERROR_UNEXPECTED;
+			goto err;
+		}
+	}
+
+err:
+	if (_in_out_pub_key) free(_in_out_pub_key);
+	if (_in_out_quote) free(_in_out_quote);
+	return status;
+}
+
+static sgx_status_t SGX_CDECL sgx_ecall_ra_provision_seed(void* pms)
+{
+	CHECK_REF_POINTER(pms, sizeof(ms_ecall_ra_provision_seed_t));
+	//
+	// fence after pointer checks
+	//
+	sgx_lfence();
+	ms_ecall_ra_provision_seed_t* ms = SGX_CAST(ms_ecall_ra_provision_seed_t*, pms);
+	sgx_status_t status = SGX_SUCCESS;
+	uint8_t* _tmp_server_pub_key = ms->ms_server_pub_key;
+	size_t _len_server_pub_key = 64;
+	uint8_t* _in_server_pub_key = NULL;
+	uint8_t* _tmp_cipher_payload = ms->ms_cipher_payload;
+	size_t _len_cipher_payload = 128;
+	uint8_t* _in_cipher_payload = NULL;
+
+	CHECK_UNIQUE_POINTER(_tmp_server_pub_key, _len_server_pub_key);
+	CHECK_UNIQUE_POINTER(_tmp_cipher_payload, _len_cipher_payload);
+
+	//
+	// fence after pointer checks
+	//
+	sgx_lfence();
+
+	if (_tmp_server_pub_key != NULL && _len_server_pub_key != 0) {
+		if ( _len_server_pub_key % sizeof(*_tmp_server_pub_key) != 0)
+		{
+			status = SGX_ERROR_INVALID_PARAMETER;
+			goto err;
+		}
+		_in_server_pub_key = (uint8_t*)malloc(_len_server_pub_key);
+		if (_in_server_pub_key == NULL) {
+			status = SGX_ERROR_OUT_OF_MEMORY;
+			goto err;
+		}
+
+		if (memcpy_s(_in_server_pub_key, _len_server_pub_key, _tmp_server_pub_key, _len_server_pub_key)) {
+			status = SGX_ERROR_UNEXPECTED;
+			goto err;
+		}
+
+	}
+	if (_tmp_cipher_payload != NULL && _len_cipher_payload != 0) {
+		if ( _len_cipher_payload % sizeof(*_tmp_cipher_payload) != 0)
+		{
+			status = SGX_ERROR_INVALID_PARAMETER;
+			goto err;
+		}
+		_in_cipher_payload = (uint8_t*)malloc(_len_cipher_payload);
+		if (_in_cipher_payload == NULL) {
+			status = SGX_ERROR_OUT_OF_MEMORY;
+			goto err;
+		}
+
+		if (memcpy_s(_in_cipher_payload, _len_cipher_payload, _tmp_cipher_payload, _len_cipher_payload)) {
+			status = SGX_ERROR_UNEXPECTED;
+			goto err;
+		}
+
+	}
+
+	ecall_ra_provision_seed(_in_server_pub_key, _in_cipher_payload);
+
+err:
+	if (_in_server_pub_key) free(_in_server_pub_key);
+	if (_in_cipher_payload) free(_in_cipher_payload);
 	return status;
 }
 
@@ -717,11 +867,13 @@ err:
 
 SGX_EXTERNC const struct {
 	size_t nr_ecall;
-	struct {void* ecall_addr; uint8_t is_priv; uint8_t is_switchless;} ecall_table[5];
+	struct {void* ecall_addr; uint8_t is_priv; uint8_t is_switchless;} ecall_table[7];
 } g_ecall_table = {
-	5,
+	7,
 	{
 		{(void*)(uintptr_t)sgx_ecall_set_verbose, 0, 0},
+		{(void*)(uintptr_t)sgx_ecall_ra_keygen, 0, 0},
+		{(void*)(uintptr_t)sgx_ecall_ra_provision_seed, 0, 0},
 		{(void*)(uintptr_t)sgx_ecall_prepare_gradient, 0, 0},
 		{(void*)(uintptr_t)sgx_ecall_generate_masked_gradient_dynamic, 0, 0},
 		{(void*)(uintptr_t)sgx_ecall_get_vector_shares_dynamic, 0, 0},
@@ -731,16 +883,16 @@ SGX_EXTERNC const struct {
 
 SGX_EXTERNC const struct {
 	size_t nr_ocall;
-	uint8_t entry_table[6][5];
+	uint8_t entry_table[6][7];
 } g_dyn_entry_table = {
 	6,
 	{
-		{0, 0, 0, 0, 0, },
-		{0, 0, 0, 0, 0, },
-		{0, 0, 0, 0, 0, },
-		{0, 0, 0, 0, 0, },
-		{0, 0, 0, 0, 0, },
-		{0, 0, 0, 0, 0, },
+		{0, 0, 0, 0, 0, 0, 0, },
+		{0, 0, 0, 0, 0, 0, 0, },
+		{0, 0, 0, 0, 0, 0, 0, },
+		{0, 0, 0, 0, 0, 0, 0, },
+		{0, 0, 0, 0, 0, 0, 0, },
+		{0, 0, 0, 0, 0, 0, 0, },
 	}
 };
 

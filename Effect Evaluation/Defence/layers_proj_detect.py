@@ -44,6 +44,10 @@ class Layers_Proj_Detector:
 
     def _compute_stats_metrics(self, metrics_container, proj_dict, prefix):
         for cid, proj_tensor in proj_dict.items():
+            # [修复点 1]：增加安全转换，避免 numpy.ndarray 没有 .float() 属性的报错
+            if not isinstance(proj_tensor, torch.Tensor):
+                proj_tensor = torch.tensor(proj_tensor)
+                
             vec = proj_tensor.float()
             metrics_container[cid][f'{prefix}_l2'] = torch.norm(vec, p=2).item()
             metrics_container[cid][f'{prefix}_var'] = torch.var(vec).item()
@@ -56,7 +60,15 @@ class Layers_Proj_Detector:
                 metrics_container[cid][f'{prefix}_dist'] = 0.0
             return
 
-        matrix = torch.stack([proj_dict[cid] for cid in cids])
+        # [修复点 2]：保证输入 stack 前是 Tensor
+        tensor_list = []
+        for cid in cids:
+            t = proj_dict[cid]
+            if not isinstance(t, torch.Tensor):
+                t = torch.tensor(t)
+            tensor_list.append(t)
+
+        matrix = torch.stack(tensor_list)
         matrix_norm = torch.nn.functional.normalize(matrix.float(), p=2, dim=1).cpu().numpy()
         
         dists = np.zeros(len(cids))
@@ -71,7 +83,6 @@ class Layers_Proj_Detector:
             major_label = np.argmax(counts)
             major_center = centers[major_label]
             
-            # Cosine Distance
             major_center_norm = major_center / (np.linalg.norm(major_center) + 1e-9)
             cos_sims = np.dot(matrix_norm, major_center_norm)
             dists = 1.0 - cos_sims
@@ -102,23 +113,19 @@ class Layers_Proj_Detector:
 
         stats_cache = {} 
 
-        # --- 硬筛查 (L2, Var) - 双边检测 ---
         for key in l2_keys + var_keys:
             values = [raw_metrics[cid][key] for cid in cids]
             med, mad = self._calc_robust_stats(values)
             multiplier = self.l2_multiplier if 'l2' in key else self.var_multiplier
             
-            # 计算单侧允许的偏差量
             allowed_dev = multiplier * max(mad, 1e-6)
             upper_thresh = med + allowed_dev
             
             stats_cache[key] = {'med': med, 'mad': mad, 'dev': allowed_dev, 'upper': upper_thresh}
             
-            # [修改] 记录 UpperThreshold 和 Median
             global_stats[f'{key}_threshold'] = upper_thresh
             global_stats[f'{key}_median'] = med
 
-        # --- 软筛查 (Distance) - 单边检测 ---
         for key in dist_keys:
             values = [raw_metrics[cid][key] for cid in cids]
             med, mad = self._calc_robust_stats(values)
@@ -130,23 +137,18 @@ class Layers_Proj_Detector:
             global_stats[f'{key}_threshold'] = upper_thresh
             global_stats[f'{key}_median'] = med
 
-        # --- 评分 ---
         for cid in cids:
             metrics = raw_metrics[cid]
             scores_list = []      
             suspect_reasons = []
             
-            # 1. 硬筛查 (双边)
             for key in l2_keys + var_keys:
                 val = metrics[key]
                 info = stats_cache[key]
                 
-                # [关键修改] 双边判定: 超过上限 或 低于下限
-                # 等价于: |val - med| > allowed_dev
                 if abs(val - info['med']) > info['dev']:
                     scores_list.append(self.suspect_score)
                     tag = "L2" if "l2" in key else "Var"
-                    # 标记是偏大(Hi)还是偏小(Lo)
                     dir_tag = "Hi" if val > info['med'] else "Lo"
                     suspect_reasons.append(f"{key.replace(f'_{tag.lower()}','')}:{tag}-{dir_tag}")
                 else:
@@ -154,11 +156,9 @@ class Layers_Proj_Detector:
                     score = self.base_good_score + self.max_bonus * np.exp(-self.score_decay * z_score)
                     scores_list.append(score)
 
-            # 2. 软筛查 (单边)
             for key in dist_keys:
                 val = metrics[key]
                 info = stats_cache[key]
-                # 距离只看是否太大
                 if val > info['upper']:
                     scores_list.append(self.suspect_score)
                     suspect_reasons.append(f"{key.replace('_dist','')}:Dist")

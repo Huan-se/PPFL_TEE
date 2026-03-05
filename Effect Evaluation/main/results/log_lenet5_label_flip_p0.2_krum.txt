@@ -1,0 +1,61 @@
+
+==================================================
+🚀 Starting Experiment: mnist_lenet5_label_flip_p0.2_krum
+==================================================
+
+[1] Loading Data...
+  [Data] Splitting mnist IID...
+
+[!] Attack Enabled: ['label_flip'] | Attackers: 4/20
+
+[2] Initializing Server...
+[TEEAdapter] Warning: Could not load TEE library (Lib not found: /home/xd/sjh/exp/Effect Evaluation/lib/libtee_bridge.so). Running in Simulation Mode only.
+
+[3] Initializing Clients...
+
+[4] Starting Federated Learning Loop...
+
+--- Global Round 1/5 ---
+    [Client 0] Epoch 1/3 | Batch 0/47 | Loss: 2.3340
+    [Client 0] Epoch 2/3 | Batch 0/47 | Loss: 2.1734
+    [Client 0] Epoch 3/3 | Batch 0/47 | Loss: 1.3006
+  [Evaluate] Main Task Acc: 81.45% | Loss: 0.5804
+  [Evaluate] Attack Success Rate (ASR): 0.00%
+  [Time] Round 1 completed in 36.20s
+
+--- Global Round 2/5 ---
+    [Client 0] Epoch 1/3 | Batch 0/47 | Loss: 1.2903
+    [Client 0] Epoch 2/3 | Batch 0/47 | Loss: 0.2487
+    [Client 0] Epoch 3/3 | Batch 0/47 | Loss: 0.2739
+  [Evaluate] Main Task Acc: 91.75% | Loss: 0.2650
+  [Evaluate] Attack Success Rate (ASR): 0.00%
+  [Time] Round 2 completed in 36.48s
+
+--- Global Round 3/5 ---
+    [Client 0] Epoch 1/3 | Batch 0/47 | Loss: 1.2680
+    [Client 0] Epoch 2/3 | Batch 0/47 | Loss: 0.1682
+    [Client 0] Epoch 3/3 | Batch 0/47 | Loss: 0.1073
+  [Evaluate] Main Task Acc: 94.43% | Loss: 0.1742
+  [Evaluate] Attack Success Rate (ASR): 0.09%
+  [Time] Round 3 completed in 36.26s
+
+--- Global Round 4/5 ---
+    [Client 0] Epoch 1/3 | Batch 0/47 | Loss: 1.0794
+    [Client 0] Epoch 2/3 | Batch 0/47 | Loss: 0.2156
+    [Client 0] Epoch 3/3 | Batch 0/47 | Loss: 0.0870
+  [Evaluate] Main Task Acc: 95.92% | Loss: 0.1267
+  [Evaluate] Attack Success Rate (ASR): 0.00%
+  [Time] Round 4 completed in 35.11s
+
+--- Global Round 5/5 ---
+    [Client 0] Epoch 1/3 | Batch 0/47 | Loss: 1.5578
+    [Client 0] Epoch 2/3 | Batch 0/47 | Loss: 0.0523
+    [Client 0] Epoch 3/3 | Batch 0/47 | Loss: 0.0725
+  [Evaluate] Main Task Acc: 96.03% | Loss: 0.1266
+  [Evaluate] Attack Success Rate (ASR): 0.00%
+  [Time] Round 5 completed in 36.26s
+
+[5] Saving results and generating plots...
+[Save] Result saved to poison_with_detection_lenet5_mnist_krum_label_flip_p0.20_IID (.json/.npz/.png)
+
+✅ Experiment finished! All data and plots saved to: results/mnist_lenet5_label_flip_p0.2_krum

@@ -1,0 +1,61 @@
+
+==================================================
+🚀 Starting Experiment: mnist_lenet5_backdoor_p0.4_clustering
+==================================================
+
+[1] Loading Data...
+  [Data] Splitting mnist IID...
+
+[!] Attack Enabled: ['backdoor'] | Attackers: 8/20
+
+[2] Initializing Server...
+[TEEAdapter] Warning: Could not load TEE library (Lib not found: /home/xd/sjh/exp/Effect Evaluation/lib/libtee_bridge.so). Running in Simulation Mode only.
+
+[3] Initializing Clients...
+
+[4] Starting Federated Learning Loop...
+
+--- Global Round 1/5 ---
+    [Client 0] Epoch 1/3 | Batch 0/47 | Loss: 2.3052
+    [Client 0] Epoch 2/3 | Batch 0/47 | Loss: 2.2434
+    [Client 0] Epoch 3/3 | Batch 0/47 | Loss: 1.2535
+  [Evaluate] Main Task Acc: 86.69% | Loss: 0.4667
+  [Evaluate] Attack Success Rate (ASR): 0.80%
+  [Time] Round 1 completed in 39.31s
+
+--- Global Round 2/5 ---
+    [Client 0] Epoch 1/3 | Batch 0/47 | Loss: 1.1688
+    [Client 0] Epoch 2/3 | Batch 0/47 | Loss: 0.7744
+    [Client 0] Epoch 3/3 | Batch 0/47 | Loss: 0.6099
+  [Evaluate] Main Task Acc: 93.76% | Loss: 0.2090
+  [Evaluate] Attack Success Rate (ASR): 0.67%
+  [Time] Round 2 completed in 39.40s
+
+--- Global Round 3/5 ---
+    [Client 0] Epoch 1/3 | Batch 0/47 | Loss: 1.1257
+    [Client 0] Epoch 2/3 | Batch 0/47 | Loss: 0.4315
+    [Client 0] Epoch 3/3 | Batch 0/47 | Loss: 0.3800
+  [Evaluate] Main Task Acc: 95.56% | Loss: 0.1461
+  [Evaluate] Attack Success Rate (ASR): 0.49%
+  [Time] Round 3 completed in 39.30s
+
+--- Global Round 4/5 ---
+    [Client 0] Epoch 1/3 | Batch 0/47 | Loss: 1.2238
+    [Client 0] Epoch 2/3 | Batch 0/47 | Loss: 0.5297
+    [Client 0] Epoch 3/3 | Batch 0/47 | Loss: 0.4727
+  [Evaluate] Main Task Acc: 96.56% | Loss: 0.1087
+  [Evaluate] Attack Success Rate (ASR): 0.37%
+  [Time] Round 4 completed in 37.80s
+
+--- Global Round 5/5 ---
+    [Client 0] Epoch 1/3 | Batch 0/47 | Loss: 1.1668
+    [Client 0] Epoch 2/3 | Batch 0/47 | Loss: 0.5191
+    [Client 0] Epoch 3/3 | Batch 0/47 | Loss: 0.5151
+  [Evaluate] Main Task Acc: 97.17% | Loss: 0.0925
+  [Evaluate] Attack Success Rate (ASR): 0.40%
+  [Time] Round 5 completed in 38.35s
+
+[5] Saving results and generating plots...
+[Save] Result saved to poison_with_detection_lenet5_mnist_clustering_backdoor_p0.40_IID (.json/.npz/.png)
+
+✅ Experiment finished! All data and plots saved to: results/mnist_lenet5_backdoor_p0.4_clustering

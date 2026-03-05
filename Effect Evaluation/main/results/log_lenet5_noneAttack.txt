@@ -1,0 +1,54 @@
+
+==================================================
+🚀 Starting Experiment: mnist_lenet5_none_p0.0_none
+==================================================
+
+[1] Loading Data...
+  [Data] Splitting mnist IID...
+
+[2] Initializing Server...
+[TEEAdapter] Warning: Could not load TEE library (Lib not found: /home/xd/sjh/exp/Effect Evaluation/lib/libtee_bridge.so). Running in Simulation Mode only.
+
+[3] Initializing Clients...
+
+[4] Starting Federated Learning Loop...
+
+--- Global Round 1/5 ---
+    [Client 0] Epoch 1/3 | Batch 0/47 | Loss: 2.3166
+    [Client 0] Epoch 2/3 | Batch 0/47 | Loss: 2.2117
+    [Client 0] Epoch 3/3 | Batch 0/47 | Loss: 1.0895
+  [Evaluate] Main Task Acc: 86.63% | Loss: 0.4498
+  [Time] Round 1 completed in 35.22s
+
+--- Global Round 2/5 ---
+    [Client 0] Epoch 1/3 | Batch 0/47 | Loss: 0.3193
+    [Client 0] Epoch 2/3 | Batch 0/47 | Loss: 0.4242
+    [Client 0] Epoch 3/3 | Batch 0/47 | Loss: 0.2350
+  [Evaluate] Main Task Acc: 93.46% | Loss: 0.2162
+  [Time] Round 2 completed in 32.87s
+
+--- Global Round 3/5 ---
+    [Client 0] Epoch 1/3 | Batch 0/47 | Loss: 0.2306
+    [Client 0] Epoch 2/3 | Batch 0/47 | Loss: 0.2190
+    [Client 0] Epoch 3/3 | Batch 0/47 | Loss: 0.1176
+  [Evaluate] Main Task Acc: 95.50% | Loss: 0.1441
+  [Time] Round 3 completed in 32.54s
+
+--- Global Round 4/5 ---
+    [Client 0] Epoch 1/3 | Batch 0/47 | Loss: 0.0316
+    [Client 0] Epoch 2/3 | Batch 0/47 | Loss: 0.2233
+    [Client 0] Epoch 3/3 | Batch 0/47 | Loss: 0.1971
+  [Evaluate] Main Task Acc: 96.55% | Loss: 0.1103
+  [Time] Round 4 completed in 32.84s
+
+--- Global Round 5/5 ---
+    [Client 0] Epoch 1/3 | Batch 0/47 | Loss: 0.0517
+    [Client 0] Epoch 2/3 | Batch 0/47 | Loss: 0.2051
+    [Client 0] Epoch 3/3 | Batch 0/47 | Loss: 0.0386
+  [Evaluate] Main Task Acc: 97.15% | Loss: 0.0900
+  [Time] Round 5 completed in 34.53s
+
+[5] Saving results and generating plots...
+[Save] Result saved to pure_training_lenet5_mnist_none_NoAttack_p0.00_IID (.json/.npz/.png)
+
+✅ Experiment finished! All data and plots saved to: results/mnist_lenet5_none_p0.0_none
