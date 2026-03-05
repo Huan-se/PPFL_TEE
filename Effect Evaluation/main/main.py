@@ -21,7 +21,7 @@ from model.Resnet20 import resnet20
 from model.Resnet18 import ResNet18_CIFAR10
 
 # ==========================================
-# 1. 实验参数与配置路由 (Argparse + YAML)
+# 1. 实验参数与配置路由 (严格对齐 config.yaml)
 # ==========================================
 def parse_args():
     parser = argparse.ArgumentParser(description="PPFL-TEE Plaintext Simulation Framework")
@@ -29,19 +29,18 @@ def parse_args():
     # 基础配置文件
     parser.add_argument('--config', type=str, default='../config/config.yaml', help='Path to base config file')
     
-    # [修改点 1]：去除 dataset 的 required=True，使其变为可选或自动推断参数
+    # 模型与数据集映射
     parser.add_argument('--dataset', type=str, choices=['mnist', 'cifar10'], help='Dataset to use (auto-bound to model if omitted)')
     parser.add_argument('--model', type=str, choices=['lenet5', 'resnet20', 'resnet18'], required=True, help='Model architecture')
     
-    # 攻击相关
-    parser.add_argument('--attack', type=str, choices=['NoAttack', 'random', 'scaling', 'backdoor', 'label_flip'], default='NoAttack')
+    # 攻击相关 (名称严格对应 config.yaml 中 attack.params 的 key)
+    parser.add_argument('--attack', type=str, choices=['none', 'random_poison', 'gradient_amplify', 'backdoor', 'label_flip'], default='none')
     parser.add_argument('--poison_ratio', type=float, default=0.0, help='Ratio of poisoned clients (0.0 to 1.0)')
-    parser.add_argument('--backdoor_target', type=int, default=0, help='Target class for backdoor attack')
     
-    # 防御相关
-    parser.add_argument('--defense', type=str, choices=['none', 'ours', 'krum', 'median', 'clustering'], default='none')
+    # 防御相关 (名称严格对应 config.yaml 中 defense.method 的值)
+    parser.add_argument('--defense', type=str, choices=['none', 'layers_proj_detect', 'krum', 'median', 'clustering'], default='none')
     
-    # 其他超参
+    # 其他超参覆盖
     parser.add_argument('--rounds', type=int, default=None, help='Number of FL rounds')
     parser.add_argument('--local_epochs', type=int, default=None, help='Local training epochs')
     parser.add_argument('--device', type=str, default='cuda', help='Device (cuda/cpu)')
@@ -49,45 +48,41 @@ def parse_args():
     return parser.parse_args()
 
 def load_config(args):
-    """加载 YAML 并用命令行参数覆盖核心变量，适配实际的 config.yaml 结构"""
+    """加载 YAML 并用命令行参数精确覆盖"""
     with open(args.config, 'r', encoding='utf-8') as f:
         config = yaml.safe_load(f)
         
     for sec in ['experiment', 'federated', 'data', 'defense', 'attack']:
         if sec not in config: config[sec] = {}
         
-    # [修改点 2]：数据集与模型强绑定逻辑
+    # 1. 数据集与模型强绑定逻辑
     if args.model == 'lenet5':
         args.dataset = 'mnist'
     elif args.model in ['resnet20', 'resnet18']:
         args.dataset = 'cifar10'
         
-    # 用 Argparse 覆盖 YAML 的 data 域
     config['data']['dataset'] = args.dataset
     config['data']['model'] = args.model
     
-    # 覆盖 YAML 的 attack 域
-    if args.attack != 'NoAttack':
+    # 2. 覆盖攻击域
+    if args.attack != 'none':
         config['attack']['active_attacks'] = [args.attack]
         config['attack']['poison_ratio'] = args.poison_ratio
-        
-        if 'params' not in config['attack']: config['attack']['params'] = {}
-        if args.attack == 'backdoor':
-            if 'backdoor' not in config['attack']['params']: config['attack']['params']['backdoor'] = {}
-            config['attack']['params']['backdoor']['backdoor_target'] = args.backdoor_target
     else:
         config['attack']['active_attacks'] = []
         config['attack']['poison_ratio'] = 0.0
 
-    # 覆盖 YAML 的 defense 域
-    config['defense']['method'] = 'layers_proj_detect' if args.defense == 'ours' else args.defense
+    # 3. 覆盖防御域
+    config['defense']['method'] = args.defense
     
-    # 覆盖 YAML 的 federated 域
+    # 4. 覆盖联邦域与实验域
     if args.rounds is not None:
         config['federated']['comm_rounds'] = args.rounds
     if args.local_epochs is not None:
         config['federated']['local_epochs'] = args.local_epochs
+    config['experiment']['device'] = args.device
     
+    # 冗余字段兼容性处理
     config['poison_ratio'] = config['attack']['poison_ratio']
     config['if_noniid'] = config['data'].get('if_noniid', False)
     
@@ -157,7 +152,6 @@ def main():
                 attack_params=config['attack'].get('params', {})
             )
 
-    # [修改点 3]：由于数据集已经强绑定，此处可以直接以原本的固定通道实例化模型
     model_class = MODEL_REGISTRY[args.model]
 
     print("\n[2] Initializing Server...")
@@ -238,7 +232,7 @@ def main():
 
     print("\n[5] Saving results and generating plots...")
     
-    if args.attack == 'NoAttack':
+    if args.attack == 'none':
         mode_name = "pure_training"
     elif args.defense == 'none':
         mode_name = "poison_no_detection"
