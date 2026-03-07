@@ -1,7 +1,11 @@
 test_logic/
 data/
-proj/
+proj*/
+main/20_rounds_results/
+main/results/
 /Enclave/include/
+results_collection/
+*result*/
 *.pt
 *.pth
 *.npz
