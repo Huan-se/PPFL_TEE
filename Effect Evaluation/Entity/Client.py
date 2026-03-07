@@ -14,12 +14,14 @@ class Client(object):
         self.verbose = verbose
         self.log_interval = log_interval 
         
+        # 保存目标计算设备 (GPU)
         if device_str == 'cuda' and torch.cuda.is_available():
             self.device = torch.device("cuda")
         else:
             self.device = torch.device("cpu")
             
-        self.model = model_class().to(self.device)
+        # 【修改 1】：初始化时，模型强行放在 CPU 上休眠，不占显存
+        self.model = model_class().cpu()
         
         self.learning_rate = 0.1 
         self.momentum = 0.9
@@ -45,8 +47,11 @@ class Client(object):
         self.w_old_cache = self._flatten_params(self.model)
 
     def phase1_local_train(self, epochs=None):
-        """[Phase 1] 本地训练 (集成 PoisonLoader)"""
+        """[Phase 1] 本地训练"""
         t_start = time.time()
+        
+        # 【修改 2】：训练开始，把模型拉到 GPU
+        self.model.to(self.device)
         self.model.train()
         
         optimizer = optim.SGD(
@@ -88,11 +93,14 @@ class Client(object):
                     if self.verbose and batch_idx % self.log_interval == 0:
                         print(f"    [Client {self.client_id}] Epoch {epoch+1}/{run_epochs} | Batch {batch_idx}/{len(self.train_loader)} | Loss: {loss.item():.4f}")
         
+        # 【修改 3】：训练结束，强制把模型踢回 CPU，并清理计算图遗留的显存缓存
+        self.model.to('cpu')
+        torch.cuda.empty_cache()
+        
         t_end = time.time()
         return t_end - t_start
 
     def phase2_tee_process(self, proj_seed):
-        """[Phase 2] OURS 方案专属：计算模拟投影并缓存明文梯度"""
         t_start = time.time()
         w_new_flat = self._flatten_params(self.model)
         
@@ -115,7 +123,6 @@ class Client(object):
         return {'full': output}, data_size
 
     def phase2_plaintext_process(self):
-        """[新增] 非 OURS 方案专用：仅提取明文梯度，彻底跳过耗时的投影运算"""
         w_new_flat = self._flatten_params(self.model)
         
         if self.w_old_cache is None: 
@@ -128,7 +135,6 @@ class Client(object):
         self.plaintext_gradient = w_new_flat - self.w_old_cache
         
         data_size = len(self.train_loader.dataset) if hasattr(self.train_loader, 'dataset') else 1000
-        # 返回 None 代替投影特征
         return None, data_size
 
     def get_plaintext_gradient(self):

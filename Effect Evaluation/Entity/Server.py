@@ -5,6 +5,7 @@ import numpy as np
 import os
 import csv
 import time
+import gc
 from collections import defaultdict
 
 from Defence.score import ScoreCalculator
@@ -166,6 +167,13 @@ class Server(object):
                 stacked_grads = torch.stack(grads_list) 
                 median_grad, _ = torch.median(stacked_grads, dim=0) 
                 self._apply_global_update(median_grad.cpu().numpy())
+                
+                # 【修改】：Median 非常吃显存，算完直接手动超度
+                del stacked_grads
+                del median_grad
+                del grads_list
+                torch.cuda.empty_cache()
+                gc.collect()
                 
                 if self.verbose:
                     print(f"  [Success] Median Aggregation Completed.")
