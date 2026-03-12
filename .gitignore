@@ -11,6 +11,7 @@ Integrated_Results/
 *.pth
 *.npz
 *.pyc
+*.zip
 # =====================================================
 
 # Python
