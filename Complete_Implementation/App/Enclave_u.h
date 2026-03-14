@@ -7,6 +7,8 @@
 #include <string.h>
 #include "sgx_edger8r.h" /* for sgx_status_t etc. */
 
+#include "sgx_key_exchange.h"
+#include "sgx_tcrypto.h"
 
 #include <stdlib.h> /* for size_t */
 
@@ -42,6 +44,8 @@ int SGX_UBRIDGE(SGX_CDECL, sgx_thread_set_multiple_untrusted_events_ocall, (cons
 #endif
 
 sgx_status_t ecall_set_verbose(sgx_enclave_id_t eid, int level);
+sgx_status_t ecall_ra_keygen(sgx_enclave_id_t eid, uint8_t* out_pub_key, uint8_t* out_quote);
+sgx_status_t ecall_ra_provision_seed(sgx_enclave_id_t eid, uint8_t* server_pub_key, uint8_t* cipher_payload);
 sgx_status_t ecall_prepare_gradient(sgx_enclave_id_t eid, int client_id, const char* proj_seed_str, float* w_new, float* w_old, size_t model_len, int* ranges, size_t ranges_len, float* output_proj, size_t out_len);
 sgx_status_t ecall_generate_masked_gradient_dynamic(sgx_enclave_id_t eid, const char* seed_mask_root_str, const char* seed_global_0_str, int client_id, int* active_ids, size_t active_count, const char* k_weight_str, size_t model_len, int* ranges, size_t ranges_len, long long* output, size_t out_len);
 sgx_status_t ecall_get_vector_shares_dynamic(sgx_enclave_id_t eid, const char* seed_sss_str, const char* seed_mask_root_str, int* u1_ids, size_t u1_len, int* u2_ids, size_t u2_len, int my_client_id, int threshold, long long* output_vector, size_t out_max_len);

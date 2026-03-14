@@ -1,9 +1,21 @@
 /* Enclave/Enclave.edl */
 enclave {
     from "sgx_tstdc.edl" import *;
-
+    include "sgx_key_exchange.h"
+    include "sgx_tcrypto.h"
     trusted {
         public void ecall_set_verbose(int level);
+        // 阶段 1：请求 Enclave 生成密钥对，并导出公钥与 Quote
+        public void ecall_ra_keygen(
+            [out, size=64] uint8_t* out_pub_key, 
+            [out, size=4384] uint8_t* out_quote
+        );
+
+        // 阶段 2：注入 Server 加密后的种子，Enclave 内部解密保存
+        public void ecall_ra_provision_seed(
+            [in, size=64] uint8_t* server_pub_key, 
+            [in, size=128] uint8_t* cipher_payload
+        );
         /* Phase 2: Prepare Gradient */
         public void ecall_prepare_gradient(
             int client_id,

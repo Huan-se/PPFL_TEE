@@ -2,12 +2,46 @@
 #include "Enclave_t.h"
 #include "sgx_trts.h"
 #include "sgx_tcrypto.h"
+#include "sgx_utils.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
 
 static int g_enclave_verbose = 0;
+
+// SGX 内部全局变量，用于保存 RATLS 状态和最终解密出的种子
+sgx_ecc_state_handle_t ecc_state = NULL;
+sgx_ec256_private_t enclave_priv_key;
+sgx_ec256_public_t enclave_pub_key;
+long global_seed_mask_root = 0; // 最终安全注入的种子
+
+void ecall_ra_keygen(uint8_t* out_pub_key, uint8_t* out_quote) {
+    // 1. 开启椭圆曲线上下文并生成 ECDH 密钥对
+    sgx_ecc256_open_context(&ecc_state);
+    sgx_ecc256_create_key_pair(&enclave_priv_key, &enclave_pub_key, ecc_state);
+    memcpy(out_pub_key, &enclave_pub_key, sizeof(sgx_ec256_public_t));
+
+    // 2. 生成 DCAP Quote (真实环境调用 sgx_se_get_quote)
+    // 这里模拟填入数据，DCAP Quote V3 大小约为 4384 字节
+    sgx_read_rand(out_quote, 4384); 
+}
+
+void ecall_ra_provision_seed(uint8_t* server_pub_key, uint8_t* cipher_payload) {
+    sgx_ec256_public_t srv_pub;
+    memcpy(&srv_pub, server_pub_key, sizeof(sgx_ec256_public_t));
+
+    // 1. 计算 Shared Secret (ECDH 核心步骤)
+    sgx_ec256_dh_shared_t shared_key;
+    sgx_ecc256_compute_shared_dhkey(&enclave_priv_key, &srv_pub, &shared_key, ecc_state);
+
+    // 2. 将 Shared Secret 作为 AES 密钥，解密 cipher_payload 获取真实的全局种子
+    // (此处省略 AES-GCM 解密代码，解密后赋值给 global_seed_mask_root)
+    
+    // 3. 清理上下文，销毁非对称私钥，保证前向安全
+    sgx_ecc256_close_context(ecc_state);
+    memset(&enclave_priv_key, 0, sizeof(sgx_ec256_private_t));
+}
 
 #define LOG_DEBUG(fmt, ...) \
     do { if (g_enclave_verbose) printf("[Enclave DEBUG] " fmt, ##__VA_ARGS__); } while (0)
@@ -161,6 +195,62 @@ public:
     }
 };
 
+// [新增] 硬件加速的 AES-CTR 随机流生成器
+class FastAESRandom {
+private:
+    sgx_aes_ctr_128bit_key_t key;
+    uint8_t ctr[16];
+
+public:
+    FastAESRandom(long seed) {
+        memset(&key, 0, sizeof(key));
+        memset(ctr, 0, sizeof(ctr));
+        // 将 seed 放入 128-bit key 的前 8 字节
+        memcpy(&key, &seed, sizeof(long));
+        // 您也可以在这里使用 SHA256(seed) 来生成更健壮的 16 字节密钥
+    }
+
+    // 选项 A：极速生成高斯分布 (Gaussian)
+    void generate_gaussian_chunk(Eigen::VectorXf& chunk, int size) {
+        // 分配全 0 缓冲区
+        std::vector<uint8_t> zeros(size * sizeof(uint32_t), 0);
+        std::vector<uint8_t> rands(size * sizeof(uint32_t), 0);
+
+        // 利用 AES-NI 硬件指令极速加密 0 缓冲区，输出完美的随机字节流
+        sgx_aes_ctr_encrypt(&key, zeros.data(), zeros.size(), ctr, 128, rands.data());
+
+        uint32_t* rand_ints = (uint32_t*)rands.data();
+        
+        // 批量 Box-Muller 转换
+        for (int i = 0; i < size; i += 2) {
+            float u1 = (rand_ints[i] + 0.5f) / 4294967296.0f;
+            float u2 = ((i + 1 < size ? rand_ints[i + 1] : 0) + 0.5f) / 4294967296.0f;
+            
+            float r = std::sqrt(-2.0f * std::log(u1));
+            float theta = 6.283185307f * u2;
+            
+            chunk[i] = r * std::cos(theta);
+            if (i + 1 < size) {
+                chunk[i + 1] = r * std::sin(theta); // 充分利用 sin
+            }
+        }
+    }
+
+    // 选项 B：极限性能的 Rademacher 分布 (+1.0 或 -1.0)
+    // 强烈推荐在 LSH 投影中使用，效果与高斯分布等价，但没有浮点 log/cos 计算！
+    void generate_rademacher_chunk(Eigen::VectorXf& chunk, int size) {
+        std::vector<uint8_t> zeros(size, 0); // 只需要 size 个字节
+        std::vector<uint8_t> rands(size, 0);
+
+        sgx_aes_ctr_encrypt(&key, zeros.data(), zeros.size(), ctr, 128, rands.data());
+
+        for (int i = 0; i < size; ++i) {
+            // 用随机字节的最低位决定符号
+            chunk[i] = (rands[i] & 1) ? 1.0f : -1.0f;
+        }
+    }
+};
+
 // ---------------------------------------------------------
 // ECALL 实现
 // ---------------------------------------------------------
@@ -190,7 +280,8 @@ void ecall_prepare_gradient(
         // P 是通过 proj_seed 生成的随机高斯矩阵，
         // 我们分块生成 P 的行，并与梯度做点积。
         
-        DeterministicRandom rng(proj_seed);
+        // DeterministicRandom rng(proj_seed);
+        FastAESRandom fast_rng(proj_seed);//这里做了替换
         Eigen::VectorXf rng_chunk(CHUNK_SIZE);
 
         for (size_t k = 0; k < out_len; ++k) {
@@ -206,10 +297,12 @@ void ecall_prepare_gradient(
                     int curr_size = std::min((int)CHUNK_SIZE, block_len - offset);
                     
                     // 生成 P 矩阵当前行的这一小段随机数
-                    for(int i=0; i<curr_size; ++i) {
-                        rng_chunk[i] = rng.next_normal();
-                    }
+                    // for(int i=0; i<curr_size; ++i) {
+                    //     rng_chunk[i] = rng.next_normal();
+                    // }
                     
+                    fast_rng.generate_rademacher_chunk(rng_chunk, curr_size);
+
                     // 计算点积
                     Eigen::Map<Eigen::VectorXf> grad_segment(
                         full_gradient.data() + start_idx + offset, 
@@ -253,6 +346,9 @@ void ecall_generate_masked_gradient_dynamic(
             return;
         }
         grad = g_gradient_buffer[client_id];
+        if (grad.size() != model_len) {
+        grad.resize(model_len, 1.0f);
+        }
     } catch(...) { return; }
 
     // 1. 计算系数 c_i

@@ -7,7 +7,6 @@ import numpy as np
 import torch
 import copy
 import random
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # 路径修复
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -17,7 +16,6 @@ sys.path.append(parent_dir)
 from Entity.Client import Client
 from Entity.Server import Server
 from _utils_.tee_adapter import get_tee_adapter_singleton
-# [新增] 引入 ServerAdapter 以便设置日志开关
 from _utils_.server_adapter import ServerAdapter 
 from _utils_.dataloader import load_and_split_dataset
 from _utils_.poison_loader import PoisonLoader
@@ -26,53 +24,28 @@ from model.Cifar10Net import CIFAR10Net
 from model.Lenet5 import LeNet5
 
 def load_config(path):
-    with open(path, 'r') as f:
+    with open(path, 'r', encoding='utf-8') as f:
         return yaml.safe_load(f)
 
-# 任务函数
-def task_phase1_train(client, epochs):
-    try:
-        return client.client_id, client.phase1_local_train(epochs), None
-    except Exception as e:
-        return client.client_id, 0, str(e)
-
-def task_phase2_tee(client, proj_seed):
-    try:
-        feature_dict, data_size = client.phase2_tee_process(proj_seed)
-        feature_dict_cpu = {'full': torch.from_numpy(feature_dict['full']), 'layers': {}}
-        if 'layers' in feature_dict and feature_dict['layers']:
-            for k, v in feature_dict['layers'].items():
-                feature_dict_cpu['layers'][k] = torch.from_numpy(v)
-        return client.client_id, feature_dict_cpu, data_size, None
-    except Exception as e:
-        return client.client_id, None, 0, str(e)
-
-def flatten_params(model):
-    params = []
-    for param in model.parameters():
-        params.append(param.data.view(-1).cpu().numpy())
-    return np.concatenate(params).astype(np.float32)
-
 def run_single_mode(full_config, mode_name, current_mode_config):
-    # 获取 verbose 开关 (默认为 False)
     exp_conf = full_config['experiment']
     verbose_flag = exp_conf.get('verbose', False)
 
-    # [新增] 定义受控打印函数
     def log(*args, **kwargs):
         if verbose_flag:
             print(*args, **kwargs)
 
-    print(f"\n=================================================================")
+    print(f"\n{'='*65}")
     print(f"  Configuration Summary | Mode: {mode_name}")
     print(f"  Verbose Logging: {'ON' if verbose_flag else 'OFF'}")
-    print(f"=================================================================")
+    print(f"{'='*65}")
     
     fed_conf = full_config['federated']
     data_conf = full_config['data']
     atk_conf = full_config['attack']
     defense_conf = full_config['defense']
     
+    # 随机数种子对齐
     seed = exp_conf['seed']
     random.seed(seed)
     np.random.seed(seed)
@@ -88,23 +61,11 @@ def run_single_mode(full_config, mode_name, current_mode_config):
         device_str = 'cuda' if torch.cuda.is_available() else 'cpu'
     print(f"  [System] Using Device: {device_str}")
     
-    use_multiprocessing = exp_conf.get('use_multiprocessing', False)
-    worker_count = exp_conf.get('thread_count', 4)
     log_interval = exp_conf.get('log_interval', 100)
-    
     save_dir = os.path.join(current_dir, "results")
     
-    # 检查结果是否存在
     detection_method = current_mode_config.get('defense_method', 'none')
-    exists, _ = check_result_exists(
-        save_dir, mode_name, data_conf['model'], data_conf['dataset'], 
-        detection_method, current_mode_config
-    )
-    if exists:
-        print(f"[Skip] Mode {mode_name} already exists.")
-        return
 
-    # Init Data
     print(f"  [Init] Loading dataset {data_conf['dataset']}...")
     all_client_dataloaders, test_loader = load_and_split_dataset(
         dataset_name=data_conf['dataset'],
@@ -119,7 +80,7 @@ def run_single_mode(full_config, mode_name, current_mode_config):
     elif data_conf['model'] == 'lenet5': ModelClass = LeNet5
     else: raise ValueError(f"Unknown model: {data_conf['model']}")
 
-    # Init Attack
+    # 初始化攻击配置
     poison_client_ids = []
     current_poison_ratio = current_mode_config.get('poison_ratio', 0.0)
     if current_poison_ratio > 0:
@@ -129,13 +90,12 @@ def run_single_mode(full_config, mode_name, current_mode_config):
     else:
         print(f"  [Attack] Malicious Clients: None")
 
-    # 准备日志路径
     log_file_path = None
-    if any(k in detection_method for k in ["mesas", "projected", "layers_proj"]):
+    if any(k in detection_method for k in ["mesas", "projected", "layers_proj", "ours"]):
         log_filename = get_result_filename(mode_name, data_conf['model'], data_conf['dataset'], detection_method, current_mode_config).replace('.npz', '_detection_log.csv')
         log_file_path = os.path.join(save_dir, log_filename)
     
-    # Init Server
+    # 初始化服务端
     server = Server(
         model_class=ModelClass,
         test_dataloader=test_loader,
@@ -143,12 +103,13 @@ def run_single_mode(full_config, mode_name, current_mode_config):
         detection_method=detection_method, 
         defense_config=defense_conf,
         seed=seed,
-        verbose=verbose_flag,               # [修改] 跟随 config 开关
+        verbose=verbose_flag,               
         log_file_path=log_file_path,
-        malicious_clients=poison_client_ids
+        malicious_clients=poison_client_ids,
+        poison_ratio=current_poison_ratio
     )
     
-    # Init Clients
+    # 初始化客户端
     clients = []
     active_attacks = atk_conf.get('active_attacks', [])
     attack_params_dict = atk_conf.get('params', {})
@@ -167,45 +128,41 @@ def run_single_mode(full_config, mode_name, current_mode_config):
             a_params = attack_params_dict.get(a_type, {})
             client_poison_loader = PoisonLoader([a_type], a_params)
         
-        # [修改] 只有当 verbose_flag=True 且是第一个客户端时，才允许 Client 内部打印
         c_verbose = (verbose_flag and cid == 0)
         c = Client(cid, all_client_dataloaders[cid], ModelClass, client_poison_loader, device_str=device_str, verbose=c_verbose, log_interval=log_interval)
         c.learning_rate = fed_conf.get('lr', 0.01)
         c.local_epochs = fed_conf.get('local_epochs', 1)
         clients.append(c)
 
-    # Pre-init TEE & Configure Logging
     print("  [System] Pre-initializing TEE Enclave (Global Singleton)...")
-    
-    # 1. 获取 TEE Adapter 实例并初始化
     tee_adapter = get_tee_adapter_singleton()
     tee_adapter.initialize_enclave()
     
-    # 2. [关键] 设置 TEE (Enclave + Bridge) 的日志开关
-    # 增加 try-catch 防止 C++ 库未更新导致 Crash
     try:
         if hasattr(tee_adapter, 'set_verbose'):
             tee_adapter.set_verbose(verbose_flag)
-    except Exception as e:
-        print(f"  [Warning] Failed to set TEE verbose: {e}")
+    except: pass
     
-    # 3. [关键] 设置 ServerCore (C++ 聚合层) 的日志开关
     try:
         temp_server_adapter = ServerAdapter()
         if hasattr(temp_server_adapter, 'set_verbose'):
             temp_server_adapter.set_verbose(verbose_flag)
-    except Exception as e:
-        print(f"  [Warning] Failed to set ServerCore verbose: {e}")
+    except: pass
 
     total_rounds = fed_conf['comm_rounds']
     acc_history = []
     asr_history = []
     loss_history = []
     
+    # 全局时间统计累加器
+    total_time_train = 0.0
+    total_time_proj = 0.0
+    total_time_detect = 0.0
+    total_time_secagg = 0.0
+    
     start_time = time.time()
     
     for r in range(1, total_rounds + 1):
-        # 使用 log() 替代 print()，受 verbose_flag 控制
         log(f"\n>>> Round {r}/{total_rounds} Start...")
         round_start_time = time.time()
         
@@ -215,55 +172,45 @@ def run_single_mode(full_config, mode_name, current_mode_config):
         global_params, _ = server.get_global_params_and_proj()
         current_proj_seed = int(seed + r)
         
+        # 分发模型
         for c in clients: c.receive_model(global_params)
 
-        # Phase 1
-        train_workers = 1 if "cuda" in device_str else min(5, worker_count)
-        log(f"  [Phase 1] Starting Local Training (Device: {device_str}, Workers: {train_workers})...")
+        # -----------------------------------------------------------------
+        # Phase 1: Local Training (串行执行以保证稳定)
+        # -----------------------------------------------------------------
+        log(f"  [Phase 1] Starting Local Training (Device: {device_str})...")
         t_p1_start = time.time()
-        if use_multiprocessing:
-            with ThreadPoolExecutor(max_workers=train_workers) as executor:
-                futures = {executor.submit(task_phase1_train, clients[cid], None): cid for cid in active_ids}
-                for future in as_completed(futures):
-                    cid, t_cost, err = future.result()
-                    if err: print(f"  [Error] Client {cid} Train: {err}")
-        else:
-            for cid in active_ids: task_phase1_train(clients[cid], None)
-        t_p1_end = time.time()
-        log(f"  >> Training Phase Finished in {t_p1_end - t_p1_start:.2f}s")
+        for cid in active_ids:
+            clients[cid].phase1_local_train()
+        t_p1_cost = time.time() - t_p1_start
+        total_time_train += t_p1_cost
+        log(f"  >> Training Phase Finished in {t_p1_cost:.2f}s")
 
-        # Phase 2
-        tee_workers = worker_count 
-        log(f"  [Phase 2] Starting TEE Processing (Workers: {tee_workers})...")
+        # -----------------------------------------------------------------
+        # Phase 2: TEE Projection Extraction
+        # -----------------------------------------------------------------
+        log(f"  [Phase 2] Starting TEE Projection...")
         t_p2_start = time.time()
-        client_features_dict_list = {}
-        client_data_sizes = {}
+        client_features_list = []
+        client_data_sizes = []
         
-        if use_multiprocessing:
-            with ThreadPoolExecutor(max_workers=tee_workers) as executor:
-                futures = {executor.submit(task_phase2_tee, clients[cid], current_proj_seed): cid for cid in active_ids}
-                for future in as_completed(futures):
-                    cid, feats, dsize, err = future.result()
-                    if feats:
-                        client_features_dict_list[cid] = feats
-                        client_data_sizes[cid] = dsize
-                    else: print(f"  [Error] Client {cid} TEE: {err}")
-        else:
-            for cid in active_ids:
-                _, feats, dsize, err = task_phase2_tee(clients[cid], current_proj_seed)
-                if feats:
-                    client_features_dict_list[cid] = feats
-                    client_data_sizes[cid] = dsize
-        t_p2_end = time.time()
-        log(f"  >> TEE Phase Finished in {t_p2_end - t_p2_start:.2f}s")
+        for cid in active_ids:
+            feat, dsize = clients[cid].phase2_tee_process(current_proj_seed)
+            client_features_list.append(feat)
+            client_data_sizes.append(dsize)
+            
+        t_p2_cost = time.time() - t_p2_start
+        total_time_proj += t_p2_cost
+        log(f"  >> TEE Projection Finished in {t_p2_cost:.2f}s")
 
-        # Phase 3
-        valid_ids = [cid for cid in active_ids if cid in client_features_dict_list]
-        feature_list = [client_features_dict_list[cid] for cid in valid_ids]
-        size_list = [client_data_sizes[cid] for cid in valid_ids]
-        
-        weights_map = server.calculate_weights(valid_ids, feature_list, size_list, current_round=r)
-        
+        # -----------------------------------------------------------------
+        # Phase 3: Server Detection & Weight Calculation
+        # -----------------------------------------------------------------
+        t_p3_start = time.time()
+        weights_map = server.calculate_weights(active_ids, client_features_list, client_data_sizes, current_round=r, client_objects=clients)
+        t_p3_cost = time.time() - t_p3_start
+        total_time_detect += t_p3_cost
+
         accepted_ids = [cid for cid, w in weights_map.items() if w > 1e-6]
         accepted_ids.sort()
         
@@ -271,19 +218,24 @@ def run_single_mode(full_config, mode_name, current_mode_config):
             print("  [Warning] No accepted clients. Skipping aggregation.")
             continue
 
+        # -----------------------------------------------------------------
+        # Phase 4 & 5: Secure Masking & Aggregation
+        # -----------------------------------------------------------------
+        t_p4_start = time.time()
+        # 该函数内部涵盖了客户端加密、分片生成以及 ServerCore 的聚合和解密
         server.secure_aggregation(clients, accepted_ids, round_num=r)
+        t_p4_cost = time.time() - t_p4_start
+        total_time_secagg += t_p4_cost
 
-        # Eval
+        # -----------------------------------------------------------------
+        # Phase 6: Evaluation
+        # -----------------------------------------------------------------
         acc, loss = server.evaluate()
         acc_history.append(acc)
         loss_history.append(loss)
         
-        round_end_time = time.time()
-        
-        # [关键] 无论 verbose 如何，Round 结果始终打印
         print(f"  [Round {r}] Global Acc: {acc:.2f}%, Loss: {loss:.4f}")
         
-        # if server_poison_loader and current_poison_ratio > 0:
         if server_poison_loader:
             asr = server.evaluate_asr(test_loader, server_poison_loader)
             asr_history.append(asr)
@@ -291,9 +243,26 @@ def run_single_mode(full_config, mode_name, current_mode_config):
         else:
             asr_history.append(0.0)
             
-        log(f"  Time Breakdown: Train={t_p1_end-t_p1_start:.1f}s, TEE={t_p2_end-t_p2_start:.1f}s, Agg={round_end_time-t_p2_end:.1f}s")
+        print(f"  [Time Stats] Train: {t_p1_cost:.2f}s | Proj: {t_p2_cost:.2f}s | Detect: {t_p3_cost:.2f}s | SecAgg: {t_p4_cost:.2f}s")
 
-    print("\n[Saving] Saving final results...")
+    # ==========================================
+    # 实验结束，打印总耗时比例报表
+    # ==========================================
+    total_pipeline_time = total_time_train + total_time_proj + total_time_detect + total_time_secagg
+    print("\n" + "="*50)
+    print(" 🕒 FINAL TIME PROFILING REPORT")
+    print("="*50)
+    print(f" Total Active Time : {total_pipeline_time:.2f} s")
+    print(f" 1. Local Training : {total_time_train:.2f} s ({(total_time_train/total_pipeline_time)*100:.2f}%)")
+    print(f" 2. TEE Projection : {total_time_proj:.2f} s ({(total_time_proj/total_pipeline_time)*100:.2f}%)")
+    print(f" 3. Server Detect  : {total_time_detect:.2f} s ({(total_time_detect/total_pipeline_time)*100:.2f}%)")
+    print(f" 4. Secure Agg     : {total_time_secagg:.2f} s ({(total_time_secagg/total_pipeline_time)*100:.2f}%)")
+    print("-" * 50)
+    projection_defense_total = total_time_proj + total_time_detect
+    print(f" ✨ Projection Detection Overhead: {projection_defense_total:.2f} s ({(projection_defense_total/total_pipeline_time)*100:.2f}%)")
+    print("="*50 + "\n")
+
+    print("[Saving] Saving final results...")
     save_result_with_config(
         save_dir,
         mode_name,
