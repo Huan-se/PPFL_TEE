@@ -44,7 +44,8 @@ class Layers_Proj_Detector:
 
     def _compute_stats_metrics(self, metrics_container, proj_dict, prefix):
         for cid, proj_tensor in proj_dict.items():
-            vec = proj_tensor.float()
+            # [核心修复 1]：强制将底层传上来的 NumPy Array 转为 PyTorch Tensor
+            vec = torch.as_tensor(proj_tensor).float()
             metrics_container[cid][f'{prefix}_l2'] = torch.norm(vec, p=2).item()
             metrics_container[cid][f'{prefix}_var'] = torch.var(vec).item()
 
@@ -56,7 +57,8 @@ class Layers_Proj_Detector:
                 metrics_container[cid][f'{prefix}_dist'] = 0.0
             return
 
-        matrix = torch.stack([proj_dict[cid] for cid in cids])
+        # [核心修复 2]：将 list 中的所有 numpy array 转为 Tensor 后再进行 stack 拼接
+        matrix = torch.stack([torch.as_tensor(proj_dict[cid]) for cid in cids])
         matrix_norm = torch.nn.functional.normalize(matrix.float(), p=2, dim=1).cpu().numpy()
         
         dists = np.zeros(len(cids))
@@ -108,13 +110,11 @@ class Layers_Proj_Detector:
             med, mad = self._calc_robust_stats(values)
             multiplier = self.l2_multiplier if 'l2' in key else self.var_multiplier
             
-            # 计算单侧允许的偏差量
             allowed_dev = multiplier * max(mad, 1e-6)
             upper_thresh = med + allowed_dev
             
             stats_cache[key] = {'med': med, 'mad': mad, 'dev': allowed_dev, 'upper': upper_thresh}
             
-            # [修改] 记录 UpperThreshold 和 Median
             global_stats[f'{key}_threshold'] = upper_thresh
             global_stats[f'{key}_median'] = med
 
@@ -141,12 +141,9 @@ class Layers_Proj_Detector:
                 val = metrics[key]
                 info = stats_cache[key]
                 
-                # [关键修改] 双边判定: 超过上限 或 低于下限
-                # 等价于: |val - med| > allowed_dev
                 if abs(val - info['med']) > info['dev']:
                     scores_list.append(self.suspect_score)
                     tag = "L2" if "l2" in key else "Var"
-                    # 标记是偏大(Hi)还是偏小(Lo)
                     dir_tag = "Hi" if val > info['med'] else "Lo"
                     suspect_reasons.append(f"{key.replace(f'_{tag.lower()}','')}:{tag}-{dir_tag}")
                 else:
@@ -158,7 +155,6 @@ class Layers_Proj_Detector:
             for key in dist_keys:
                 val = metrics[key]
                 info = stats_cache[key]
-                # 距离只看是否太大
                 if val > info['upper']:
                     scores_list.append(self.suspect_score)
                     suspect_reasons.append(f"{key.replace('_dist','')}:Dist")

@@ -20,8 +20,9 @@ from _utils_.server_adapter import ServerAdapter
 from _utils_.dataloader import load_and_split_dataset
 from _utils_.poison_loader import PoisonLoader
 from _utils_.save_config import save_result_with_config, check_result_exists, get_result_filename
-from model.Cifar10Net import CIFAR10Net
 from model.Lenet5 import LeNet5
+from model.Resnet20 import resnet20
+from model.Resnet18 import ResNet18_CIFAR10
 
 def load_config(path):
     with open(path, 'r', encoding='utf-8') as f:
@@ -76,9 +77,15 @@ def run_single_mode(full_config, mode_name, current_mode_config):
         data_dir="./data"
     )
     
-    if data_conf['model'] == 'cifar10': ModelClass = CIFAR10Net
-    elif data_conf['model'] == 'lenet5': ModelClass = LeNet5
-    else: raise ValueError(f"Unknown model: {data_conf['model']}")
+    model_name = data_conf.get('model', '').lower()
+    if model_name == 'lenet5': 
+        ModelClass = LeNet5
+    elif model_name == 'resnet20': 
+        ModelClass = resnet20
+    elif model_name == 'resnet18': 
+        ModelClass = ResNet18_CIFAR10
+    else: 
+        raise ValueError(f"Unknown model architecture in config: {model_name}.")
 
     # 初始化攻击配置
     poison_client_ids = []
@@ -154,7 +161,6 @@ def run_single_mode(full_config, mode_name, current_mode_config):
     asr_history = []
     loss_history = []
     
-    # 全局时间统计累加器
     total_time_train = 0.0
     total_time_proj = 0.0
     total_time_detect = 0.0
@@ -172,12 +178,9 @@ def run_single_mode(full_config, mode_name, current_mode_config):
         global_params, _ = server.get_global_params_and_proj()
         current_proj_seed = int(seed + r)
         
-        # 分发模型
         for c in clients: c.receive_model(global_params)
 
-        # -----------------------------------------------------------------
-        # Phase 1: Local Training (串行执行以保证稳定)
-        # -----------------------------------------------------------------
+        # Phase 1: Local Training
         log(f"  [Phase 1] Starting Local Training (Device: {device_str})...")
         t_p1_start = time.time()
         for cid in active_ids:
@@ -186,9 +189,7 @@ def run_single_mode(full_config, mode_name, current_mode_config):
         total_time_train += t_p1_cost
         log(f"  >> Training Phase Finished in {t_p1_cost:.2f}s")
 
-        # -----------------------------------------------------------------
         # Phase 2: TEE Projection Extraction
-        # -----------------------------------------------------------------
         log(f"  [Phase 2] Starting TEE Projection...")
         t_p2_start = time.time()
         client_features_list = []
@@ -203,9 +204,7 @@ def run_single_mode(full_config, mode_name, current_mode_config):
         total_time_proj += t_p2_cost
         log(f"  >> TEE Projection Finished in {t_p2_cost:.2f}s")
 
-        # -----------------------------------------------------------------
         # Phase 3: Server Detection & Weight Calculation
-        # -----------------------------------------------------------------
         t_p3_start = time.time()
         weights_map = server.calculate_weights(active_ids, client_features_list, client_data_sizes, current_round=r, client_objects=clients)
         t_p3_cost = time.time() - t_p3_start
@@ -218,18 +217,13 @@ def run_single_mode(full_config, mode_name, current_mode_config):
             print("  [Warning] No accepted clients. Skipping aggregation.")
             continue
 
-        # -----------------------------------------------------------------
         # Phase 4 & 5: Secure Masking & Aggregation
-        # -----------------------------------------------------------------
         t_p4_start = time.time()
-        # 该函数内部涵盖了客户端加密、分片生成以及 ServerCore 的聚合和解密
         server.secure_aggregation(clients, accepted_ids, round_num=r)
         t_p4_cost = time.time() - t_p4_start
         total_time_secagg += t_p4_cost
 
-        # -----------------------------------------------------------------
         # Phase 6: Evaluation
-        # -----------------------------------------------------------------
         acc, loss = server.evaluate()
         acc_history.append(acc)
         loss_history.append(loss)
@@ -245,9 +239,6 @@ def run_single_mode(full_config, mode_name, current_mode_config):
             
         print(f"  [Time Stats] Train: {t_p1_cost:.2f}s | Proj: {t_p2_cost:.2f}s | Detect: {t_p3_cost:.2f}s | SecAgg: {t_p4_cost:.2f}s")
 
-    # ==========================================
-    # 实验结束，打印总耗时比例报表
-    # ==========================================
     total_pipeline_time = total_time_train + total_time_proj + total_time_detect + total_time_secagg
     print("\n" + "="*50)
     print(" 🕒 FINAL TIME PROFILING REPORT")
@@ -284,6 +275,15 @@ def main():
     
     config = load_config(args.config)
     
+    # [核心修复区]：强行绑定数据集和模型，避免通道数/输入尺寸等维度冲突
+    model_name = config['data'].get('model', '').lower()
+    if model_name == 'lenet5':
+        config['data']['dataset'] = 'mnist'
+    elif model_name in ['resnet20', 'resnet18']:
+        config['data']['dataset'] = 'cifar10'
+    else:
+        print(f"[Warning] Unknown model '{model_name}'. Hoping the dataset matches.")
+
     base_flat_config = {
         'total_clients': config['federated']['total_clients'],
         'batch_size': config['federated']['batch_size'],

@@ -19,6 +19,13 @@ class PoisonLoader:
             if method not in self.valid_attacks:
                 raise ValueError(f"不支持的投毒方式: {method}")
 
+    # [修复核心]：完全基于 PyTorch Tensor 的内部展平函数，杜绝 NumPy 污染
+    def _get_flat_params(self, model):
+        params = []
+        for param in model.parameters():
+            params.append(param.data.view(-1))
+        return torch.cat(params)
+
     def execute_attack(self, model, dataloader, model_class, device='cpu', optimizer=None, verbose=False, uid="?", log_interval=100):
         """统一的攻击执行入口"""
         if "random_poison" in self.attack_methods:
@@ -35,7 +42,8 @@ class PoisonLoader:
         
         initial_model = model_class().to(device)
         initial_model.load_state_dict(copy.deepcopy(model.state_dict()))
-        initial_flat = initial_model.get_flat_params()
+        # [修复]：使用内部的安全展平函数
+        initial_flat = self._get_flat_params(initial_model)
 
         criterion = nn.CrossEntropyLoss()
         local_epochs = self.attack_params.get("local_epochs", 3)
@@ -57,7 +65,8 @@ class PoisonLoader:
                 if verbose and (batch_idx % log_interval == 0):
                     print(f"    [Client {uid}] Epoch {epoch+1}/{local_epochs} | Batch {batch_idx}/{len(dataloader)} | Loss: {loss.item():.4f}")
 
-        trained_flat = model.get_flat_params()
+        # [修复]：使用内部的安全展平函数
+        trained_flat = self._get_flat_params(model)
         grad_flat = trained_flat - initial_flat
 
         grad_flat = self.apply_gradient_poison(grad_flat)
@@ -75,7 +84,8 @@ class PoisonLoader:
     def _execute_random_poison(self, model, model_class, device):
         initial_model = model_class().to(device)
         initial_model.load_state_dict(copy.deepcopy(model.state_dict()))
-        initial_flat = initial_model.get_flat_params()
+        # [修复]：使用内部的安全展平函数
+        initial_flat = self._get_flat_params(initial_model)
 
         noise_std = self.attack_params.get("noise_std", 0.5)
         grad_flat = torch.randn_like(initial_flat) * noise_std
@@ -169,6 +179,10 @@ class PoisonLoader:
         return -inversion_strength * grad_flat
 
     def _load_flat_params_to_model(self, model, flat_params):
+        # [补充防御]：万一传入的是普通数组，强制转换为与模型相同设备上的张量
+        if not isinstance(flat_params, torch.Tensor):
+            flat_params = torch.tensor(flat_params, device=next(model.parameters()).device)
+            
         start_idx = 0
         for param in model.parameters():
             numel = param.numel()

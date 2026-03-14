@@ -10,6 +10,12 @@ from collections import defaultdict
 from Defence.score import ScoreCalculator
 from Defence.kickout import KickoutManager
 from Defence.layers_proj_detect import Layers_Proj_Detector
+# [修复重点 1]：引入 BaselineDetector 支持 Krum 等算法对比
+try:
+    from Defence.baseline_method import BaselineDetector
+except ImportError:
+    BaselineDetector = None
+
 from _utils_.tee_adapter import get_tee_adapter_singleton
 from _utils_.server_adapter import ServerAdapter 
 
@@ -18,7 +24,8 @@ MOD = 9223372036854775783
 SCALE = 100000000.0 
 
 class Server(object):
-    def __init__(self, model_class, test_dataloader, device_str, detection_method="none", defense_config=None, seed=42, verbose=False, log_file_path=None, malicious_clients=None):
+    # [修复重点 2]：在 __init__ 的末尾加上 poison_ratio=0.0 以避免 TypeError
+    def __init__(self, model_class, test_dataloader, device_str, detection_method="none", defense_config=None, seed=42, verbose=False, log_file_path=None, malicious_clients=None, poison_ratio=0.0):
         self.device = torch.device(device_str)
         self.global_model = model_class().to(self.device)
         self.test_dataloader = test_dataloader
@@ -33,14 +40,28 @@ class Server(object):
         self.seed = seed 
         self.malicious_clients = set(malicious_clients) if malicious_clients else set()
         self.defense_config = defense_config or {}
+        
         self.suspect_counters = {} 
         self.global_update_direction = None 
         self.detection_history = defaultdict(lambda: {'suspect_cnt': 0, 'kicked_cnt': 0, 'events': []})
+        
         det_params = self.defense_config.get('params', {})
         self.mesas_detector = Layers_Proj_Detector(config=det_params)
+        
+        # [修复重点 3]：初始化基线防御方法
+        if self.detection_method in ['krum', 'clustering'] and BaselineDetector is not None:
+            self.baseline_detector = BaselineDetector(
+                method=self.detection_method, 
+                poison_ratio=poison_ratio, 
+                device_str=device_str
+            )
+        else:
+            self.baseline_detector = None
+            
         self.score_calculator = ScoreCalculator() if "score" in detection_method else None
         self.kickout_manager = KickoutManager() if "kickout" in detection_method else None
         self.current_round_weights = {}
+        
         self.seed_mask_root = 0x12345678 
         self.seed_global_0 = 0x87654321  
         self.seed_sss = 0x11223344
@@ -78,11 +99,13 @@ class Server(object):
         self.w_old_global_flat = self._flatten_params(self.global_model)
         return copy.deepcopy(self.global_model.state_dict()), None
 
-    def calculate_weights(self, client_id_list, client_features_dict_list, client_data_sizes, current_round=0):
-        client_projections = {cid: feat for cid, feat in zip(client_id_list, client_features_dict_list)}
-        self._update_global_direction_feature(current_round)
+    def calculate_weights(self, client_id_list, client_features_dict_list, client_data_sizes, current_round=0, client_objects=None):
         weights = {}
-        if any(k in self.detection_method for k in ["mesas", "projected", "layers_proj"]):
+        
+        if any(k in self.detection_method for k in ["mesas", "projected", "layers_proj", "ours"]):
+            self._update_global_direction_feature(current_round)
+            client_projections = {cid: feat for cid, feat in zip(client_id_list, client_features_dict_list)}
+            
             if self.verbose: 
                 print(f"  [Server] Executing {self.detection_method} detection (Round {current_round})...")
             
@@ -95,8 +118,20 @@ class Server(object):
             
             total_score = sum(raw_weights.values())
             weights = {cid: s / total_score for cid, s in raw_weights.items()} if total_score > 0 else {cid: 0.0 for cid in raw_weights}
+            
+        # [修复重点 4]：处理基于明文梯度的基线方法检测
+        elif self.detection_method in ['krum', 'clustering'] and self.baseline_detector and client_objects:
+            if self.verbose:
+                print(f"  [Server] Executing Baseline {self.detection_method.upper()} detection (Round {current_round})...")
+            # 提取客户端明文梯度供基线算法分析
+            client_grads = {c.client_id: c.get_plaintext_gradient() for c in client_objects if c.client_id in client_id_list}
+            weights, logs, global_stats = self.baseline_detector.detect(client_grads, verbose=self.verbose)
+            if self.log_file_path:
+                self._write_detection_log(current_round, logs, weights, global_stats)
+                
         else:
             weights = {cid: 1.0/len(client_id_list) for cid in client_id_list}
+            
         self.current_round_weights = weights
         return weights
 
@@ -295,7 +330,6 @@ class Server(object):
                 param.data.add_(grad_tensor)
                 idx += numel
 
-    # [新增] BN 重校准函数 (核心修复：执行实际逻辑，而非递归调用)
     def recalibrate_bn(self, loader, num_batches=20):
         self.global_model.train()
         with torch.no_grad():
@@ -306,13 +340,10 @@ class Server(object):
         self.global_model.eval()
 
     def evaluate(self):
-        # 1. 评估前先校准 BN (使用测试集的一小部分)
         if self.test_dataloader:
             self.recalibrate_bn(self.test_dataloader, num_batches=20)
         
-        # 2. 标准 eval
         self.global_model.eval()
-        
         test_loss, correct, total = 0, 0, 0
         with torch.no_grad():
             for inputs, targets in self.test_dataloader:
@@ -326,17 +357,12 @@ class Server(object):
         return 100.*correct/total, test_loss/len(self.test_dataloader)
 
     def evaluate_asr(self, loader, poison_loader):
-        # [修正1] 使用 eval 模式 (标准评估流程)
-        # 如果您依然想用 train 模式作弊来提高 ASR，可以改回 self.global_model.train()
         self.global_model.eval()
         
         correct = 0
         total = 0
-        
-        # [修正2] 保存原始配置，防止修改影响后续训练
         original_params = copy.deepcopy(poison_loader.attack_params)
         
-        # [修正3] 强制 100% 投毒，确保 ASR 测的是纯粹的攻击效果
         poison_loader.attack_params['backdoor_ratio'] = 1.0  
         poison_loader.attack_params['poison_ratio'] = 1.0    
         
@@ -344,20 +370,14 @@ class Server(object):
         target_class = None
         filter_fn = None 
         
-        # [修正4] 根据攻击类型构建筛选器
         if "backdoor" in attack_methods:
             target_class = original_params.get("backdoor_target", 0)
-            # 测试所有非目标类样本 (看加了 Trigger 后是否变成 Target)
             filter_fn = lambda t: t != target_class
-            
         elif "label_flip" in attack_methods:
             target_class = original_params.get("target_class", 7)
             source_class = original_params.get("source_class", 1)
-            # 仅测试源类样本 (看是否被翻转到 Target)
             filter_fn = lambda t: t == source_class
-            
         else:
-            # 其他情况尝试通用处理
             if "target_class" in original_params:
                 target_class = original_params["target_class"]
                 filter_fn = lambda t: t != target_class
@@ -373,16 +393,13 @@ class Server(object):
             for data, target in loader:
                 data, target = data.to(self.device), target.to(self.device)
                 
-                # 应用筛选
                 indices = torch.where(filter_fn(target))[0]
                 if len(indices) == 0: continue
                 
                 data_subset = data[indices]
                 target_subset = target[indices]
                 
-                # 施加投毒 (此时 ratio=1.0，全量变毒)
                 data_poisoned, target_poisoned = poison_loader.apply_data_poison(data_subset, target_subset)
-                
                 data_poisoned = data_poisoned.to(self.device)
                 target_poisoned = target_poisoned.to(self.device)
                 
@@ -392,7 +409,6 @@ class Server(object):
                 total += len(target_poisoned)
                 correct += predicted.eq(target_poisoned).sum().item()
         
-        # [修正5] 恢复原始配置
         poison_loader.attack_params = original_params
         
         if total == 0: return 0.0
