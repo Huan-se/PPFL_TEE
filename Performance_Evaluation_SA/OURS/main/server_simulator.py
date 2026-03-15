@@ -35,7 +35,7 @@ class ServerSimulator:
         # 初始化检测器
         self.detector = Layers_Proj_Detector(config={})
         
-        # [核心修正 1]：全局投影缓存，初始轮次设定为全 0 向量 (假设投影维度为 1024)
+        # 全局投影缓存，初始轮次设定为全 0 向量 (假设投影维度为 1024)
         self.global_proj_cache = np.zeros(1024, dtype=np.float32)
         
         self.seed_mask_root = 0x12345678 
@@ -48,6 +48,7 @@ class ServerSimulator:
 
     def _get_msg_size(self, msg_dict):
         import pickle
+        # 序列化后的字节长度 + 4字节的头部长度
         return len(pickle.dumps(msg_dict)) + 4
 
     def wait_for_clients(self):
@@ -120,10 +121,6 @@ class ServerSimulator:
         with ThreadPoolExecutor(max_workers=len(target_ids)) as executor:
             for cid in target_ids: executor.submit(_recv, cid)
         return results
-    def _get_msg_size(self, msg_dict):
-        import pickle
-        # 序列化后的字节长度 + 4字节的头部长度
-        return len(pickle.dumps(msg_dict)) + 4
 
     def run_simulation_round(self):
         active_ids = list(self.client_sockets.keys())
@@ -133,39 +130,32 @@ class ServerSimulator:
         # --- 通信量统计累加器 (以 Byte 为单位) ---
         comm_bytes_proj_upload = 0
         comm_bytes_weight_down = 0
+        comm_bytes_cipher_up = 0     # [新增] 掩码模型上传累加器
         comm_bytes_shares_req = 0
         comm_bytes_shares_up = 0
         
         print(f"========== 完整通信与计算性能测试 (维度: {self.param_size}) ==========")
         
         # --- 准备阶段：下发模型 (此时间不计入您要求的五大核心耗时) ---
-
         if self.enable_model_broadcast:
-            # 真实传输 4MB 的数据
             dummy_global_model = np.random.randn(self.param_size).astype(np.float32)
             self._send_to_targets({"action": "SYNC_MODEL", "data": dummy_global_model}, active_ids)
         else:
-            # 伪造内存共享：仅下发包含 None 的触发信令，极速触发客户端
             self._send_to_targets({"action": "SYNC_MODEL", "data": None}, active_ids)
         self._recv_from_targets("RES_TRAIN_DONE", active_ids)
 
         if self.enable_projection:
-            # ==========================================================
-            # 1. 投影时间：模型生成后 -> TEE 投影 -> 上传完毕
-            # ==========================================================
+            # 1. 投影时间
             print("[1/4] 发起请求，客户端生成投影并回传...")
             t_start_proj = time.time()
             self._send_to_targets({"action": "REQ_PROJ"}, active_ids)
             proj_results = self._recv_from_targets("RES_PROJ", active_ids)
             t_proj_total = time.time() - t_start_proj
             
-            # [通信量统计] 累加上传的投影大小
             for cid, feat in proj_results.items():
                 comm_bytes_proj_upload += self._get_msg_size({"action": "RES_PROJ", "data": feat})
 
-            # ==========================================================
-            # 2. Server 异常检测：Server 端纯净计算与基准迭代
-            # ==========================================================
+            # 2. Server 异常检测
             print("[2/4] 执行 Server 端防御检测算法...")
             t_start_det = time.time()
             
@@ -182,7 +172,6 @@ class ServerSimulator:
             accepted_ids = [cid for cid, w in weights_map.items() if w > 1e-6]
             accepted_ids.sort()
             
-            # 迭代更新全局基准投影
             new_global_proj = np.zeros(1024, dtype=np.float32)
             for cid in accepted_ids:
                 new_global_proj += weights_map[cid] * proj_results[cid]
@@ -197,10 +186,8 @@ class ServerSimulator:
             print("[Skip] 跳过投影和检测阶段...")
             t_proj_total = 0.0
             t_det_total = 0.0
-            
             accepted_ids = active_ids[:]
             weights_map = {cid: 1.0 / N for cid in active_ids}
-            
             self._send_to_targets({"action": "SKIP_PROJ"}, active_ids)
             self._recv_from_targets("RES_SKIP_PROJ", active_ids)
 
@@ -216,7 +203,6 @@ class ServerSimulator:
         N_u1 = len(u1_ids)
         N_u2 = len(u2_ids)
 
-
         # ==========================================================
         # 3. 安全加扰时间：下发梯度掩码指令 -> 生成密文与分片 -> 上传完毕
         # ==========================================================
@@ -225,18 +211,19 @@ class ServerSimulator:
         
         msg_dicts = {cid: {"action": "REQ_CIPHER", "u1_ids": u1_ids, "weight": weights_map[cid]} for cid in u2_ids}
         self._send_custom_to_targets(msg_dicts, u2_ids)
-        
         for cid in u2_ids:
             comm_bytes_weight_down += self._get_msg_size(msg_dicts[cid])
             
         cipher_results = self._recv_from_targets("RES_CIPHER", u2_ids)
+
+        # [新增统计] 精确统计上传的掩码模型 (O(d) 级别大数据) 的物理字节数
+        for cid, cipher_data in cipher_results.items():
+            comm_bytes_cipher_up += self._get_msg_size({"action": "RES_CIPHER", "data": cipher_data})
         
-        # 传递 U1 和 U2 给存活的客户端
+        # 传递 U1 和 U2 给存活的客户端获取掉线恢复分片
         req_share_msg = {"action": "REQ_SHARES", "u1_ids": u1_ids, "u2_ids": u2_ids}
         self._send_to_targets(req_share_msg, u2_ids)
         shares_results = self._recv_from_targets("RES_SHARES", u2_ids)
-        
-        t_mask_total = time.time() - t_start_mask
         
         comm_bytes_shares_req += self._get_msg_size(req_share_msg) * N_u2
         for cid, shares in shares_results.items():
@@ -263,12 +250,14 @@ class ServerSimulator:
         comm_init_kb = self.comm_bytes_ratls / 1024.0 / N
         comm_proj_detect_kb = (comm_bytes_proj_upload + comm_bytes_weight_down) / 1024.0 / N
         
-        # 3. 安全加扰与聚合阶段通信量 (除开掩码向量本身)
-        # 掩码生成通信量本方案为0 (本地 PRG)
-        comm_mask_gen_kb = 0.0 
+        # [新增] 掩码模型自身上传的大小 (以实际存活节点数 N_u2 计算平均值)
+        comm_cipher_up_kb = comm_bytes_cipher_up / 1024.0 / N_u2 if N_u2 > 0 else 0
+        
         # 掉线恢复通信量 (Req Shares + Res Shares)
         comm_recovery_kb = (comm_bytes_shares_req + comm_bytes_shares_up) / 1024.0 / N_u2 if N_u2 > 0 else 0
-        comm_secure_agg_kb = comm_mask_gen_kb + comm_recovery_kb
+        
+        # 总通信量累加
+        total_comm_kb = comm_init_kb + comm_proj_detect_kb + comm_cipher_up_kb + comm_recovery_kb
 
         # ==========================================================
         # 打印全新的通信量与时间报告
@@ -277,9 +266,10 @@ class ServerSimulator:
         print("【通信量评估 (单客户端均值)】")
         print(f" 1. 系统初始化通信量 : {comm_init_kb:.2f} KB (含完整 Quote 验证与密钥分发)")
         print(f" 2. 投影检测方案开销 : {comm_proj_detect_kb:.2f} KB (投影上传 + 权重下发)")
-        print(f" 3. 安全加扰与恢复开销: {comm_secure_agg_kb:.2f} KB (本方案掩码生成 0KB + 分片恢复传输)")
+        print(f" 3. 掩码模型上传开销 : {comm_cipher_up_kb:.2f} KB (真实 O(d) 级密文传输)")
+        print(f" 4. 掉线恢复分片传输 : {comm_recovery_kb:.2f} KB (分片请求与收集)")
         print(" -----------------------------------------------")
-
+        print(f" 📊 总物理网络开销   : {total_comm_kb:.2f} KB")
         
         # ==========================================================
         # 最终时间换算与汇总报告输出
@@ -306,8 +296,6 @@ class ServerSimulator:
         for sock in self.client_sockets.values(): sock.close()
         
 if __name__ == "__main__":
-    # 实例化 Server 模拟器
-    # 您可以在这里修改端口、客户端数量、参数维度等
     parser = argparse.ArgumentParser()
     parser.add_argument("--num_clients", type=int, default=100)
     parser.add_argument("--param_size", type=int, default=1000000)

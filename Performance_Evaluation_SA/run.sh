@@ -28,8 +28,8 @@ sudo sysctl -w net.ipv4.tcp_tw_reuse=1 2>/dev/null || true
 sudo sysctl -w net.ipv4.ip_local_port_range="1024 65535" 2>/dev/null || true
 
 # 3. 定义实验参数
-SCHEMES=("BatchCrypt" ) #"SecAgg" "SecAgg+" "OURS" 
-CLIENT_COUNTS=(100)
+SCHEMES=("OURS" ) #"SecAgg" "SecAgg+" "OURS" 
+CLIENT_COUNTS=(10 50 100)
 PARAM_POWERS=(10 15 20)
 CURRENT_PORT=10000
 
